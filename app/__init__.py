@@ -1,0 +1,3 @@
+"""
+VoxAI Backend application package.
+""" 
