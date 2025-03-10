@@ -92,6 +92,7 @@ class NotebookFile:
             "text/plain",
             "text/markdown",
             "text/csv",
+            "application/json",
             "application/pdf",
         ]
     

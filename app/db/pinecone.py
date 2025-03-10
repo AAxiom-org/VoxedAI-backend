@@ -258,15 +258,15 @@ class PineconeClient:
         query_text: str, 
         top_k: int = 5, 
         namespace: str = "",
-        filter: Optional[Dict[str, Any]] = None
+        filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Search for records using text search.
-
+        Performs a text search using Pinecone's search_records API.
+        
         Args:
-            query_text: The text query
-            top_k: Number of results to return
-            namespace: The namespace to search in
+            query_text: The text query to search for.
+            top_k: Number of results to return.
+            namespace: The namespace to search in.
             filter: Optional filter to apply
             
         Returns:
@@ -280,10 +280,18 @@ class PineconeClient:
             logger.info(f"Performing text search with query: '{query_text}'")
             
             # Construct the search query according to Pinecone's search_records format
-            search_query = {
-                "inputs": {"text": query_text},
-                "top_k": top_k
-            }
+            if filter:
+                search_query = {
+                    "inputs": {"text": query_text},
+                    "top_k": top_k,
+                    "filter": filter,
+                }
+            else:
+                search_query = {
+                    "inputs": {"text": query_text},
+                    "top_k": top_k,
+                }
+            
             if not namespace:
                 namespace = ""
             # Perform search without applying filter at the Pinecone level
@@ -294,30 +302,40 @@ class PineconeClient:
             
             logger.info(f"DEBUG - Pinecone search_records response: {response}")
             
-            # Process the results to match the expected format
-            # The response contains 'result' with 'hits' instead of 'matches'
-            hits = response.get("result", {}).get("hits", [])
-            
-            # Apply post-search filtering based on the provided filter
-            filtered_hits = hits
-            if filter and "id" in filter and "$in" in filter["id"]:
-                target_ids = filter["id"]["$in"]
-                # Filter hits where _id exactly matches any of the target_ids
-                filtered_hits = [hit for hit in hits if hit.get("_id") in target_ids]
-                logger.info(f"Post-search filtering applied: {len(filtered_hits)}/{len(hits)} results kept")
-            
-            # Transform to match the previous return format for compatibility
+            # Transform the response to match the expected format
             transformed_results = []
-            for hit in filtered_hits:
-                # Process each hit to a compatible format
-                result = {
-                    "id": hit.get("_id"),
-                    "score": hit.get("_score"),
-                    "metadata": hit.get("fields", {})
-                }
-                transformed_results.append(result)
-                
-            logger.info(f"Search returned {transformed_results}")
+            if response and "result" in response and "hits" in response["result"]:
+                for hit in response["result"]["hits"]:
+                    # Extract the metadata and other relevant fields
+                    fields = hit.get("fields", {})
+                    
+                    # Process the text chunk
+                    text_chunk = fields.get("text_chunk", "")
+                    
+                    # Process additional info if it exists
+                    additional_info = fields.get("additional_info", {})
+                    
+                    # Create the result dictionary
+                    result = {
+                        "id": hit.get("_id", ""),
+                        "score": hit.get("_score", 0.0),
+                        "text": text_chunk,
+                        "file_id": fields.get("file_id", ""),
+                        "file_path": fields.get("file_path", ""),
+                        "source": fields.get("source", "Unknown"),
+                        "metadata": {
+                            "chunk_index": fields.get("chunk_index", 0),
+                            "description": fields.get("description", ""),
+                            "additional_info": additional_info,
+                            "entities": fields.get("entities", []),
+                            "key_points": fields.get("key_points", []),
+                            "topics": fields.get("topics", []),
+                            "total_chunks": fields.get("total_chunks", 1)
+                        }
+                    }
+                    transformed_results.append(result)
+            
+            logger.info(f"Search returned {len(transformed_results)} results")
             return transformed_results
         except Exception as e:
             logger.error(f"Error searching records in Pinecone: {e}")

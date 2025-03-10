@@ -279,8 +279,14 @@ class EmbeddingService:
             Dict[str, Any]: The deletion response.
         """
         try:
-            pinecone_id = supabase_client.table("files").select("pinecone_id").eq("id", file_id).execute().data[0]["pinecone_id"]
+            # Get file metadata to find the pinecone_id
+            metadata = await supabase_client.get_file_metadata(file_id)
             
+            if not metadata or not metadata.get("pinecone_id"):
+                logger.warning(f"No pinecone_id found for file {file_id}")
+                return {"deleted_count": 0, "message": f"No pinecone_id found for file {file_id}"}
+            
+            pinecone_id = metadata.get("pinecone_id")
             return await self.delete_vectors_by_pinecone_id(pinecone_id, namespace)
         except Exception as e:
             logger.error(f"Error deleting file vectors: {e}")

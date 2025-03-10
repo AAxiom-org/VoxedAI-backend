@@ -42,21 +42,21 @@ class RAGService:
                 
             # Optimize the query if requested
             search_query = query
-            if optimize_query:
-                try:
-                    logger.info(f"DEBUG - About to optimize query: '{query}'")
-                    optimized = await llm_service.optimize_query(query)
-                    logger.info(f"DEBUG - Raw optimized query: '{optimized}'")
+            # if optimize_query:
+            #     try:
+            #         logger.info(f"DEBUG - About to optimize query: '{query}'")
+            #         optimized = await llm_service.optimize_query(query)
+            #         logger.info(f"DEBUG - Raw optimized query: '{optimized}'")
                     
-                    # Only use the optimized query if it's a valid string and not empty
-                    if isinstance(optimized, str) and optimized.strip():
-                        search_query = optimized
-                        logger.info(f"Optimized query: '{query}' -> '{search_query}'")
-                    else:
-                        logger.warning(f"Optimization returned invalid result, using original query")
-                except Exception as e:
-                    logger.error(f"Error during query optimization: {e}")
-                    # Continue with the original query if optimization fails
+            #         # Only use the optimized query if it's a valid string and not empty
+            #         if isinstance(optimized, str) and optimized.strip():
+            #             search_query = optimized
+            #             logger.info(f"Optimized query: '{query}' -> '{search_query}'")
+            #         else:
+            #             logger.warning(f"Optimization returned invalid result, using original query")
+            #     except Exception as e:
+            #         logger.error(f"Error during query optimization: {e}")
+            #         # Continue with the original query if optimization fails
             
             # Search directly using text-based search (no embedding generation needed)
             logger.info(f"DEBUG - Searching with query: '{search_query}'")
@@ -67,7 +67,24 @@ class RAGService:
                 filter=filter
             )
             
+            # Log the number of results found
             logger.info(f"Retrieved {len(results)} context documents for query: '{query}'")
+            
+            # If we have results, make sure they're properly formatted
+            if results:
+                # Ensure each result has the required fields
+                for i, result in enumerate(results):
+                    if "text" not in result or not result["text"]:
+                        logger.warning(f"Result {i} missing text field, adding empty text")
+                        result["text"] = ""
+                    
+                    if "file_id" not in result or not result["file_id"]:
+                        logger.warning(f"Result {i} missing file_id field")
+                    
+                    if "metadata" not in result:
+                        logger.warning(f"Result {i} missing metadata field, adding empty metadata")
+                        result["metadata"] = {}
+            
             return results
         except Exception as e:
             logger.error(f"Error retrieving context: {e}")

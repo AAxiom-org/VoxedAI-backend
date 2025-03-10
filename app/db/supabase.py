@@ -344,6 +344,42 @@ class SupabaseClient:
             output_lines.append("")  # Add an empty line between sections
         return "\n".join(output_lines).strip()
 
+    async def delete_notebook_file(self, file_id: str) -> Dict[str, Any]:
+        """
+        Deletes a notebook file from the database.
+        
+        Args:
+            file_id: The ID of the file to delete.
+            
+        Returns:
+            Dict[str, Any]: The deletion response.
+        """
+        try:
+            response = self.client.table("notebook_files").delete().eq("id", file_id).execute()
+            if response.data:
+                return {"success": True, "deleted": response.data}
+            return {"success": False, "message": "No file found with the given ID"}
+        except Exception as e:
+            logger.error(f"Error deleting notebook file: {e}")
+            raise
+
+    async def delete_file_from_storage(self, file_path: str) -> Dict[str, Any]:
+        """
+        Deletes a file from Supabase storage.
+        
+        Args:
+            file_path: The path of the file in storage.
+            
+        Returns:
+            Dict[str, Any]: The deletion response.
+        """
+        try:
+            response = self.client.storage.from_("Vox").remove([file_path])
+            return {"success": True, "path": file_path}
+        except Exception as e:
+            logger.error(f"Error deleting file from storage: {e}")
+            raise
+
 
 
 # Global instance of the Supabase client

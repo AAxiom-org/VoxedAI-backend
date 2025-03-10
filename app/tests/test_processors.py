@@ -12,6 +12,7 @@ from pathlib import Path
 import importlib
 import re
 import time
+import pytest
 
 # Add project root to Python path
 proj_root = Path(__file__).resolve().parent.parent.parent
@@ -79,6 +80,7 @@ def get_file_type_from_extension(ext: str) -> str:
         ".txt": "text/plain",
         ".md": "text/markdown", 
         ".markdown": "text/markdown",
+        ".json": "application/json",
         ".pdf": "application/pdf",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -214,6 +216,55 @@ async def interactive_loop():
         
         else:
             print("Unknown command. Type 'list' to see available tests or 'exit' to quit.")
+
+
+@pytest.mark.asyncio
+async def test_json_processor():
+    """
+    Test the JSON processor.
+    """
+    # Create a sample JSON content
+    json_content = {
+        "name": "Test User",
+        "age": 30,
+        "email": "test@example.com",
+        "is_active": True,
+        "tags": ["tag1", "tag2", "tag3"],
+        "address": {
+            "street": "123 Main St",
+            "city": "Test City",
+            "country": "Test Country"
+        }
+    }
+    
+    # Convert to bytes
+    file_content = json.dumps(json_content).encode('utf-8')
+    file_path = "test.json"
+    
+    # Create processor
+    from app.services.file_processors.text_processor import JSONProcessor
+    processor = JSONProcessor()
+    
+    # Test process method
+    processed_content = await processor.process(file_content, file_path)
+    
+    # Verify the processed content
+    assert "JSON Document:" in processed_content
+    assert "Test User" in processed_content
+    assert "test@example.com" in processed_content
+    assert "Test City" in processed_content
+    
+    # Test metadata extraction
+    metadata = await processor.get_metadata(file_content, file_path)
+    
+    # Verify metadata
+    assert metadata["file_size"] == len(file_content)
+    assert metadata["file_extension"] == ".json"
+    assert metadata["json_type"] == "object"
+    assert "top_level_keys" in metadata
+    assert "name" in metadata["top_level_keys"]
+    assert "address" in metadata["top_level_keys"]
+    assert metadata["key_count"] == 6  # name, age, email, is_active, tags, address
 
 
 if __name__ == "__main__":

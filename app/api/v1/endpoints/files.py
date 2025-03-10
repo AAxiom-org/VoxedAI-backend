@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 
 from app.core.logging import logger
 from app.schemas.file import (
-    DeleteByPineconeIdRequest,
     FileIngestRequest, 
     FileIngestResponse, 
     FileMetadataResponse
@@ -177,61 +176,31 @@ async def get_file_metadata(
 
 
 @router.delete("/{file_id}", response_model=Dict[str, Any])
-async def delete_file_vectors(
+async def delete_file(
     file_id: UUID = Path(..., description="The ID of the file"),
-    namespace: str = Query("", description="The namespace to delete from"),
 ) -> Dict[str, Any]:
     """
-    Deletes all vectors for a file from Pinecone.
+    Completely deletes a file, including its vectors, storage, and database records.
+    
+    This endpoint:
+    1. Deletes all Pinecone embeddings for the file
+    2. Deletes the file from the Supabase storage "Vox" bucket
+    3. Deletes the file from the notebook_files table (which triggers cascade deletion)
     
     Args:
         file_id: The ID of the file.
-        namespace: The namespace to delete from.
         
     Returns:
         Dict[str, Any]: The deletion response.
     """
     try:
-        # Delete vectors from Pinecone
-        response = await embedding_service.delete_file_vectors(str(file_id), namespace)
+        # Use the consolidated delete function
+        response = await file_service.delete_file(str(file_id))
         
-        return {
-            "success": True,
-            "message": f"Vectors for file {file_id} deleted",
-            "details": response
-        }
+        return response
     except Exception as e:
-        logger.error(f"Error deleting file vectors: {e}")
-        raise HTTPException(status_code=500, detail=f"Error deleting file vectors: {str(e)}")
-
-
-@router.post("/delete-by-pinecone-id", response_model=Dict[str, Any])
-async def delete_by_pinecone_id(
-    request: DeleteByPineconeIdRequest,
-    namespace: str = Query("", description="The namespace to delete from"),
-) -> Dict[str, Any]:
-    """
-    Deletes all vectors with the given Pinecone ID prefix.
-    
-    Args:
-        request: The delete request containing the Pinecone ID.
-        namespace: The namespace to delete from.
-        
-    Returns:
-        Dict[str, Any]: The deletion response.
-    """
-    try:
-        # Delete vectors from Pinecone
-        response = await embedding_service.delete_vectors_by_pinecone_id(request.file_id, namespace)
-        
-        return {
-            "success": True,
-            "message": f"Vectors with Pinecone ID prefix {request.file_id} deleted",
-            "details": response
-        }
-    except Exception as e:
-        logger.error(f"Error deleting vectors by Pinecone ID: {e}")
-        raise HTTPException(status_code=500, detail=f"Error deleting vectors by Pinecone ID: {str(e)}")
+        logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
 
 
 async def _process_file_content(

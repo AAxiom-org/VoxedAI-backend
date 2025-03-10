@@ -205,5 +205,68 @@ class FileService:
             logger.error(f"Error extracting metadata from file: {e}")
             raise
 
+    @staticmethod
+    async def delete_file(file_id: str) -> Dict[str, Any]:
+        """
+        Completely deletes a file, including its vectors and database records.
+        
+        This method:
+        1. Deletes all Pinecone embeddings for the file
+        2. Deletes the file from the Supabase storage "Vox" bucket
+        3. Deletes the file from the notebook_files table (which triggers cascade deletion)
+        
+        Args:
+            file_id: The ID of the file to delete.
+            
+        Returns:
+            Dict[str, Any]: The deletion response.
+        """
+        try:
+            from app.services.embedding_service import embedding_service
+            
+            # Get file details to get the file path
+            notebook_file = await FileService.get_notebook_file(file_id)
+            if not notebook_file:
+                return {
+                    "success": False,
+                    "message": f"File {file_id} not found"
+                }
+            
+            file_path = notebook_file.file_path
+            
+            # Step 1: Delete vectors from Pinecone
+            pinecone_response = {}
+            try:
+                pinecone_response = await embedding_service.delete_file_vectors(str(file_id))
+                logger.info(f"Deleted vectors for file {file_id}: {pinecone_response}")
+            except Exception as e:
+                logger.error(f"Error deleting vectors for file {file_id}: {e}")
+                # Continue with deletion even if vector deletion fails
+            
+            # Step 2: Delete file from Supabase storage
+            storage_response = {}
+            try:
+                storage_response = await supabase_client.delete_file_from_storage(file_path)
+                logger.info(f"Deleted file from storage: {file_path}")
+            except Exception as e:
+                logger.error(f"Error deleting file from storage {file_path}: {e}")
+                # Continue with deletion even if storage deletion fails
+            
+            # Step 3: Delete file from database
+            db_response = await supabase_client.delete_notebook_file(str(file_id))
+            
+            return {
+                "success": db_response.get("success", False),
+                "message": f"File {file_id} deleted successfully",
+                "details": {
+                    "database": db_response,
+                    "storage": storage_response,
+                    "pinecone": pinecone_response
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error deleting file {file_id}: {e}")
+            raise
+
 
 file_service = FileService() 

@@ -80,6 +80,9 @@ class FileProcessorFactory:
         elif file_type in ["text/markdown"]:
             from app.services.file_processors.text_processor import MarkdownProcessor
             return MarkdownProcessor()
+        elif file_type in ["application/json"]:
+            from app.services.file_processors.text_processor import JSONProcessor
+            return JSONProcessor()
         elif file_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
             from app.services.file_processors.document_processor import WordProcessor
             return WordProcessor()
