@@ -1,5 +1,5 @@
 """
-Database models for notebook files.
+Database models for space files.
 """
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -8,11 +8,11 @@ from uuid import UUID
 
 class NotebookFile:
     """
-    Represents a notebook file record in the database.
+    Represents a space file record in the database.
     """
 
     id: UUID
-    notebook_id: UUID
+    space_id: UUID
     user_id: str
     file_name: str
     file_path: str
@@ -23,7 +23,7 @@ class NotebookFile:
     def __init__(
         self,
         id: UUID,
-        notebook_id: UUID,
+        space_id: UUID,
         user_id: str,
         file_name: str,
         file_path: str,
@@ -32,7 +32,7 @@ class NotebookFile:
         created_at: Optional[datetime] = None,
     ):
         self.id = id
-        self.notebook_id = notebook_id
+        self.space_id = space_id
         self.user_id = user_id
         self.file_name = file_name
         self.file_path = file_path
@@ -46,14 +46,14 @@ class NotebookFile:
         Creates a NotebookFile instance from a dictionary.
         
         Args:
-            data: The dictionary containing notebook file data.
+            data: The dictionary containing space file data.
             
         Returns:
             NotebookFile: A new NotebookFile instance.
         """
         return cls(
             id=data.get("id"),
-            notebook_id=data.get("notebook_id"),
+            space_id=data.get("space_id"),
             user_id=data.get("user_id"),
             file_name=data.get("file_name"),
             file_path=data.get("file_path"),
@@ -67,11 +67,11 @@ class NotebookFile:
         Converts the NotebookFile instance to a dictionary.
         
         Returns:
-            Dict[str, Any]: A dictionary representation of the notebook file.
+            Dict[str, Any]: A dictionary representation of the space file.
         """
         return {
             "id": str(self.id) if self.id else None,
-            "notebook_id": str(self.notebook_id) if self.notebook_id else None,
+            "space_id": str(self.space_id) if self.space_id else None,
             "user_id": self.user_id,
             "file_name": self.file_name,
             "file_path": self.file_path,

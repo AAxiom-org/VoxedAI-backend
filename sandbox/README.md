@@ -33,7 +33,7 @@ docker run -p 8000:8000 code-sandbox
 
 3. If the main API server is running on 8000 use 80001
 ```bash
-# Build the sandbox image
+# Build the sandbox image 
 docker build -t code-sandbox .
 
 # Run the sandbox container on port 8001

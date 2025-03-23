@@ -9,7 +9,7 @@ from uuid import UUID
 from app.core.logging import logger
 from app.db.supabase import supabase_client
 from app.models.file_metadata import FileMetadata
-from app.models.notebook_file import NotebookFile
+from app.models.space_file import NotebookFile
 from app.services.file_processors import FileProcessorFactory
 
 
@@ -39,23 +39,23 @@ class FileService:
             raise
 
     @staticmethod
-    async def get_notebook_file(file_id: str) -> Optional[NotebookFile]:
+    async def get_space_file(file_id: str) -> Optional[NotebookFile]:
         """
-        Fetches notebook file information from the database.
+        Fetches space file information from the database.
         
         Args:
             file_id: The ID of the file.
             
         Returns:
-            Optional[NotebookFile]: The notebook file, or None if not found.
+            Optional[NotebookFile]: The space file, or None if not found.
         """
         try:
-            file_dict = await supabase_client.get_notebook_file(file_id)
+            file_dict = await supabase_client.get_space_file(file_id)
             if not file_dict:
                 return None
             return NotebookFile.from_dict(file_dict)
         except Exception as e:
-            logger.error(f"Error fetching notebook file: {e}")
+            logger.error(f"Error fetching space file: {e}")
             raise
 
     @staticmethod
@@ -213,7 +213,7 @@ class FileService:
         This method:
         1. Deletes all Pinecone embeddings for the file
         2. Deletes the file from the Supabase storage "Vox" bucket
-        3. Deletes the file from the notebook_files table (which triggers cascade deletion)
+        3. Deletes the file from the space_files table (which triggers cascade deletion)
         
         Args:
             file_id: The ID of the file to delete.
@@ -225,14 +225,14 @@ class FileService:
             from app.services.embedding_service import embedding_service
             
             # Get file details to get the file path
-            notebook_file = await FileService.get_notebook_file(file_id)
-            if not notebook_file:
+            space_file = await FileService.get_space_file(file_id)
+            if not space_file:
                 return {
                     "success": False,
                     "message": f"File {file_id} not found"
                 }
             
-            file_path = notebook_file.file_path
+            file_path = space_file.file_path
             
             # Step 1: Delete vectors from Pinecone
             pinecone_response = {}
@@ -253,7 +253,7 @@ class FileService:
                 # Continue with deletion even if storage deletion fails
             
             # Step 3: Delete file from database
-            db_response = await supabase_client.delete_notebook_file(str(file_id))
+            db_response = await supabase_client.delete_space_file(str(file_id))
             
             return {
                 "success": db_response.get("success", False),

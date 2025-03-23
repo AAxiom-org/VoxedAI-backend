@@ -17,7 +17,7 @@ class FileMetadataBase(BaseModel):
 
 class FileMetadataCreate(FileMetadataBase):
     """Schema for creating file metadata."""
-    file_id: UUID = Field(..., description="ID of the notebook file")
+    file_id: UUID = Field(..., description="ID of the space file")
 
 
 class FileMetadataUpdate(BaseModel):
@@ -30,7 +30,7 @@ class FileMetadataUpdate(BaseModel):
 class FileMetadataInDB(FileMetadataBase):
     """Schema for file metadata in the database."""
     id: UUID = Field(..., description="ID of the file metadata record")
-    file_id: UUID = Field(..., description="ID of the notebook file")
+    file_id: UUID = Field(..., description="ID of the space file")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
     pinecone_id: Optional[str] = Field(None, description="ID of the vector in Pinecone")

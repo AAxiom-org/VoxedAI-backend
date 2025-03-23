@@ -65,9 +65,9 @@ class SupabaseClient:
             logger.error(f"Error fetching file metadata: {e}")
             raise
 
-    async def get_notebook_file(self, file_id: str) -> Dict[str, Any]:
+    async def get_space_file(self, file_id: str) -> Dict[str, Any]:
         """
-        Fetches file information from the notebook_files table.
+        Fetches file information from the space_files table.
         
         Args:
             file_id: The ID of the file.
@@ -76,12 +76,12 @@ class SupabaseClient:
             Dict[str, Any]: The file information.
         """
         try:
-            response = self.client.table("notebook_files").select("*").eq("id", file_id).execute()
+            response = self.client.table("space_files").select("*").eq("id", file_id).execute()
             if response.data:
                 return response.data[0]
             return {}
         except Exception as e:
-            logger.error(f"Error fetching notebook file: {e}")
+            logger.error(f"Error fetching space file: {e}")
             raise
 
     async def create_file_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -197,8 +197,8 @@ class SupabaseClient:
         try:
             context_entries = []
             for file_id in file_ids:
-                # Get file details from notebook_files table
-                file_details = await self.get_notebook_file(file_id)
+                # Get file details from space_files table
+                file_details = await self.get_space_file(file_id)
                 if not file_details:
                     logger.warning(f"File details not found for file_id: {file_id}")
                     continue
@@ -251,10 +251,10 @@ class SupabaseClient:
     
     def get_file_path(self, file_id: str) -> str:
         """
-        Fetches the path of the file from the notebook_files table.
+        Fetches the path of the file from the space_files table.
         """
         try:
-            response = self.client.table("notebook_files").select("file_path").eq("id", file_id).execute()
+            response = self.client.table("space_files").select("file_path").eq("id", file_id).execute()
             return response.data[0]["file_path"]
         except Exception as e:
             logger.error(f"Error fetching file path: {e}")
@@ -344,9 +344,9 @@ class SupabaseClient:
             output_lines.append("")  # Add an empty line between sections
         return "\n".join(output_lines).strip()
 
-    async def delete_notebook_file(self, file_id: str) -> Dict[str, Any]:
+    async def delete_space_file(self, file_id: str) -> Dict[str, Any]:
         """
-        Deletes a notebook file from the database.
+        Deletes a space file from the database.
         
         Args:
             file_id: The ID of the file to delete.
@@ -355,12 +355,12 @@ class SupabaseClient:
             Dict[str, Any]: The deletion response.
         """
         try:
-            response = self.client.table("notebook_files").delete().eq("id", file_id).execute()
+            response = self.client.table("space_files").delete().eq("id", file_id).execute()
             if response.data:
                 return {"success": True, "deleted": response.data}
             return {"success": False, "message": "No file found with the given ID"}
         except Exception as e:
-            logger.error(f"Error deleting notebook file: {e}")
+            logger.error(f"Error deleting space file: {e}")
             raise
 
     async def delete_file_from_storage(self, file_path: str) -> Dict[str, Any]:

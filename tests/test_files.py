@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.file_metadata import FileMetadata
-from app.models.notebook_file import NotebookFile
+from app.models.space_file import NotebookFile
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def mock_file_service():
     """
     with patch("app.api.v1.endpoints.files.file_service") as mock:
         # Set up mock methods
-        mock.get_notebook_file = AsyncMock()
+        mock.get_space_file = AsyncMock()
         mock.get_file_metadata = AsyncMock()
         mock.create_file_metadata = AsyncMock()
         mock.update_file_metadata = AsyncMock()
@@ -69,16 +69,16 @@ def test_ingest_file(client, mock_file_service, mock_llm_service):
     file_id = str(uuid.uuid4())
     
     # Set up mock returns
-    notebook_file = NotebookFile(
+    space_file = NotebookFile(
         id=uuid.UUID(file_id),
-        notebook_id=uuid.uuid4(),
+        space_id=uuid.uuid4(),
         user_id="test_user",
         file_name="test_file.txt",
         file_path="test_path/test_file.txt",
         file_type="text/plain",
         file_size=100
     )
-    mock_file_service.get_notebook_file.return_value = notebook_file
+    mock_file_service.get_space_file.return_value = space_file
     mock_file_service.get_file_metadata.return_value = None
     
     mock_file_service.get_file_text_content.return_value = "Test file content"
@@ -115,19 +115,19 @@ def test_ingest_file(client, mock_file_service, mock_llm_service):
     assert response.json()["metadata"]["file_id"] == file_id
     
     # Verify mock calls
-    mock_file_service.get_notebook_file.assert_called_once_with(file_id)
+    mock_file_service.get_space_file.assert_called_once_with(file_id)
     mock_file_service.get_file_metadata.assert_called_once_with(file_id)
     mock_file_service.get_file_text_content.assert_called_once_with(
-        notebook_file.file_path, notebook_file.file_type
+        space_file.file_path, space_file.file_type
     )
     mock_llm_service.generate_file_description.assert_called_once_with(
         file_content="Test file content",
-        file_name=notebook_file.file_name,
-        file_type=notebook_file.file_type
+        file_name=space_file.file_name,
+        file_type=space_file.file_type
     )
     mock_file_service.create_file_metadata.assert_called_once_with(
         file_id=uuid.UUID(file_id),
-        file_path=notebook_file.file_path,
+        file_path=space_file.file_path,
         description=mock_llm_result["description"],
         metadata=mock_llm_result["metadata"]
     )

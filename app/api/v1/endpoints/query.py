@@ -301,8 +301,19 @@ async def _stream_query(request: QueryRequest) -> StreamingResponse:
             try:
                 async for chunk in answer_stream:
                     logger.info(f"DEBUG - Received chunk: {chunk}")
-                    chunk_json = json.dumps({"type": "token", "data": chunk})
-                    yield f"data: {chunk_json}\n\n"
+                    
+                    # Check if this is a reasoning chunk
+                    if chunk.startswith("<reasoning>") and chunk.endswith("</reasoning>"):
+                        # Extract reasoning content
+                        reasoning_content = chunk[11:-12]  # Remove <reasoning> and </reasoning> tags
+                        # Send as a reasoning token
+                        reasoning_json = json.dumps({"type": "reasoning", "data": reasoning_content})
+                        yield f"data: {reasoning_json}\n\n"
+                    else:
+                        # Regular content token
+                        chunk_json = json.dumps({"type": "token", "data": chunk})
+                        yield f"data: {chunk_json}\n\n"
+                    
                     await asyncio.sleep(0)  # Allow other tasks to run
             except Exception as e:
                 logger.error(f"Error streaming chunks: {e}")
@@ -388,8 +399,19 @@ async def _stream_query_coding(request: QueryRequest) -> StreamingResponse:
                 try:
                     async for chunk in answer_stream:
                         logger.info(f"DEBUG - Received coding chunk: {chunk}")
-                        chunk_json = json.dumps({"type": "token", "data": chunk})
-                        yield f"data: {chunk_json}\n\n"
+                        
+                        # Check if this is a reasoning chunk
+                        if chunk.startswith("<reasoning>") and chunk.endswith("</reasoning>"):
+                            # Extract reasoning content
+                            reasoning_content = chunk[11:-12]  # Remove <reasoning> and </reasoning> tags
+                            # Send as a reasoning token
+                            reasoning_json = json.dumps({"type": "reasoning", "data": reasoning_content})
+                            yield f"data: {reasoning_json}\n\n"
+                        else:
+                            # Regular content token
+                            chunk_json = json.dumps({"type": "token", "data": chunk})
+                            yield f"data: {chunk_json}\n\n"
+                        
                         await asyncio.sleep(0)  # Allow other tasks to run
                 except Exception as e:
                     logger.error(f"Error streaming coding chunks: {e}")

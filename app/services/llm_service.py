@@ -8,10 +8,8 @@ import asyncio
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
-import anthropic
-import google.generativeai as genai
+import requests
 import httpx
-import openai
 from fastapi import HTTPException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -28,23 +26,19 @@ class LLMService:
         """
         Initializes the LLM service with API clients.
         """
-        # Initialize OpenAI client
-        self.openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        # Base URL for OpenRouter API
+        self.base_url = "https://openrouter.ai/api/v1"
         
-        # Initialize Anthropic client
-        self.anthropic_client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-        
-        # Initialize Gemini client
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        # Default model, but we'll create specific models as needed
-        self.gemini_model = genai.GenerativeModel('gemini-1.5-flash-8b')
-        # Keep a cache of model instances
-        self.gemini_models = {'gemini-1.5-flash-8b': self.gemini_model}
+        # Authorization header for OpenRouter
+        self.headers = {
+            "Authorization": f"Bearer {settings.OPEN_ROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
         
         # Keep httpx clients for any custom requests
         self.http_client = httpx.AsyncClient(timeout=60.0)
         
-        logger.info("LLM service initialized with official API clients")
+        logger.info("LLM service initialized with OpenRouter API client")
 
     async def close(self):
         """
@@ -56,7 +50,7 @@ class LLMService:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     async def generate_file_description(self, file_content: str, file_name: str, file_type: str) -> Dict[str, Any]:
         """
-        Generates a description and metadata for a file using Gemini.
+        Generates a description and metadata for a file using LLM.
         
         Args:
             file_content: The content of the file.
@@ -98,14 +92,14 @@ class LLMService:
             }}
             """
             
-            # Use the official Gemini API client
-            response = await asyncio.to_thread(
-                self.gemini_model.generate_content,
-                prompt
+            # Use the consolidated LLM call function
+            response_text = await self._call_llm(
+                prompt=prompt,
+                model_name="deepseek/deepseek-chat:free",
+                stream=False
             )
             
             # Extract JSON from the response
-            response_text = response.text
             json_str = self._extract_json_from_text(response_text)
             result = json.loads(json_str)
             
@@ -126,7 +120,7 @@ class LLMService:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     async def optimize_query(self, query: str) -> str:
         """
-        Optimizes a user query for better retrieval results using Gemini.
+        Optimizes a user query for better retrieval results.
         
         Args:
             query: The original user query.
@@ -157,15 +151,16 @@ class LLMService:
             Return ONLY the optimized query text, with no additional explanation or formatting.
             """
             
-            # Use the official Gemini API client
-            response = await asyncio.to_thread(
-                self.gemini_model.generate_content,
-                prompt
+            # Use the consolidated LLM call function
+            response_text = await self._call_llm(
+                prompt=prompt,
+                model_name="deepseek/deepseek-chat:free",
+                stream=False
             )
             
-            logger.info(f"DEBUG - Gemini response text: '{response.text.strip()}'")
+            logger.info(f"DEBUG - LLM response text: '{response_text.strip()}'")
             
-            return response.text.strip()
+            return response_text.strip()
         except Exception as e:
             logger.error(f"Error optimizing query: {e}")
             # Return the original query if optimization fails
@@ -175,7 +170,7 @@ class LLMService:
         self, 
         query: str, 
         context: List[Dict[str, Any]], 
-        model_name: str = "gemini",
+        model_name: str = "deepseek/deepseek-chat:free",
         stream: bool = False,
     ) -> Union[str, AsyncGenerator[str, None]]:
         """
@@ -277,63 +272,60 @@ class LLMService:
             logger.info(f"DEBUG - Total formatted context length: {len(formatted_context)} characters")
             
             prompt = f"""
-                You are an AI assistant helping to answer questions based on provided context, but also capable of responding to direct requests.
+               You are an AI assistant helping to answer questions based on provided context, but also capable of responding to direct requests.
 
-                Context:
-                {formatted_context}
 
-                User request: 
-                {query}
+               Context:
+               {formatted_context}
 
-                Guidelines:
-                1. Always prioritize directly addressing the user's request first.
-                2. If the request is a direct instruction (like "Tell a story" or "Write a poem"), fulfill it to the best of your ability regardless of the context.
-                3. Only when the request is a question seeking information should you primarily rely on the provided context.
-                4. When using the context to answer questions, reference specific sources when applicable (e.g., "According to [filename]...").
-                5. If the context is irrelevant to the request, simply fulfill the request using your general knowledge and abilities.
-                6. Maintain a helpful, informative, and friendly tone.
 
-                Response:
-            """
+               User request:
+               {query}
+
+
+               Guidelines:
+               1. Always prioritize directly addressing the user's request first.
+               2. If the request is a direct instruction (like "Tell a story" or "Write a poem"), fulfill it to the best of your ability regardless of the context.
+               3. Only when the request is a question seeking information should you primarily rely on the provided context.
+               4. When using the context to answer questions, reference specific sources when applicable (e.g., "According to [filename]...").
+               5. If the context is irrelevant to the request, simply fulfill the request using your general knowledge and abilities.
+               6. Maintain a helpful, informative, and friendly tone.
+               7. Format all responses in beautiful and informative markdown.
+               8. Use $...$ for inline LaTeX expressions. Example: The formula $E = mc^2$ shows the relationship between energy and mass.
+               9. Use $$...$$ for block/display LaTeX expressions, with each formula on its own line. Example:
+               $$
+               F = G \frac{{m_1 m_2}}{{r^2}}
+               $$
+               10. For multi-line equations, use the align environment within block delimiters:
+               $$
+               \begin{{align*}}
+               y &= mx + b \\
+               &= 2x + 3
+               \end{{align*}}
+               $$
+               11. Ensure all special characters in LaTeX expressions are properly escaped with a single backslash.
+               12. Format step-by-step mathematical solutions with clear delineation between text explanation and LaTeX formulas.
+               13. When boxing final answers, use the \boxed{{}} command within a display math environment:
+               $$
+               \boxed{{x = \frac{{-b \pm \sqrt{{b^2 - 4ac}}}}{{2a}}}}
+               $$
+
+
+               Response:
+           """
             
             # Log the total prompt length
             logger.info(f"DEBUG - Total prompt length: {len(prompt)} characters")
             logger.info(f"DEBUG - Full prompt including context: {prompt}")
             
-            result = None
+            # Use the consolidated LLM call function
+            return await self._call_llm(prompt=prompt, model_name=model_name, stream=stream)
             
-            # Check if model name starts with "gemini" (to handle model versions like "gemini-1.5-flash-8b")
-            if model_name.lower().startswith("gemini"):
-                if stream:
-                    logger.info("DEBUG - Using Gemini streaming")
-                    result = await self._stream_gemini(prompt, model_name)
-                else:
-                    logger.info("DEBUG - Using Gemini non-streaming")
-                    result = await self._call_gemini(prompt, model_name)
-            elif model_name.lower() == "anthropic":
-                if stream:
-                    logger.info("DEBUG - Using Anthropic streaming")
-                    result = await self._stream_anthropic(prompt)
-                else:
-                    logger.info("DEBUG - Using Anthropic non-streaming")
-                    result = await self._call_anthropic(prompt)
-            elif model_name.lower() == "openai":
-                if stream:
-                    logger.info("DEBUG - Using OpenAI streaming")
-                    result = await self._stream_openai(prompt)
-                else:
-                    logger.info("DEBUG - Using OpenAI non-streaming")
-                    result = await self._call_openai(prompt)
-            else:
-                raise ValueError(f"Unsupported model: {model_name}")
-                
-            logger.info(f"DEBUG - Result type from generate_answer: {type(result)}")
-            return result
         except Exception as e:
             logger.error(f"Error in generate_answer: {e}")
             raise
 
-    async def generate_answer_with_coding_question(self, query: str, model_name: str = "gemini") -> Union[str, AsyncGenerator[str, None]]:
+    async def generate_answer_with_coding_question(self, query: str, model_name: str = "deepseek/deepseek-chat:free") -> Union[str, AsyncGenerator[str, None]]:
         """
         Generates an answer to a coding question using the specified LLM model.
         
@@ -370,288 +362,149 @@ class LLMService:
             Response:
         """
 
-        if model_name.lower().startswith("gemini"):
-            if stream:
-                logger.info("DEBUG - Using Gemini streaming")
-                result = await self._stream_gemini(prompt, model_name)
-            else:
-                logger.info("DEBUG - Using Gemini non-streaming")
-                result = await self._call_gemini(prompt, model_name)
-        elif model_name.lower() == "anthropic":
-            if stream:
-                logger.info("DEBUG - Using Anthropic streaming")
-                result = await self._stream_anthropic(prompt)
-            else:
-                logger.info("DEBUG - Using Anthropic non-streaming")
-                result = await self._call_anthropic(prompt)
-        elif model_name.lower() == "openai":
-            if stream:
-                logger.info("DEBUG - Using OpenAI streaming")
-                result = await self._stream_openai(prompt)
-            else:
-                logger.info("DEBUG - Using OpenAI non-streaming")
-                result = await self._call_openai(prompt)
-        else:
-            raise ValueError(f"Unsupported model: {model_name}")
-        
-        logger.info(f"DEBUG - Result type from generate_answer_with_coding_question: {type(result)}")
-        return result
+        # Use the consolidated LLM call function
+        return await self._call_llm(prompt=prompt, model_name=model_name, stream=stream)
 
-    def _get_gemini_model(self, model_name: str) -> Any:
+    async def _call_llm(
+        self, 
+        prompt: str, 
+        model_name: str = "deepseek/deepseek-chat:free", 
+        stream: bool = False,
+        temperature: float = 0.4,
+        max_tokens: int = 2048
+    ) -> Union[str, AsyncGenerator[str, None]]:
         """
-        Gets or creates a Gemini model instance for the specified model name.
-        
-        Args:
-            model_name: The name of the model to get or create.
-            
-        Returns:
-            Any: The Gemini model instance.
-        """
-        # Default to gemini-1.5-flash-8b if just "gemini" is specified
-        if model_name.lower() == "gemini":
-            model_name = "gemini-1.5-flash-8b"
-            
-        # Create the model if it doesn't exist in our cache
-        if model_name not in self.gemini_models:
-            logger.info(f"Creating new Gemini model instance for {model_name}")
-            try:
-                self.gemini_models[model_name] = genai.GenerativeModel(model_name)
-            except Exception as e:
-                logger.error(f"Error creating Gemini model {model_name}: {e}")
-                # Fall back to default model
-                logger.info(f"Falling back to default model gemini-1.5-flash-8b")
-                model_name = "gemini-1.5-flash-8b"
-                
-        return self.gemini_models[model_name]
-        
-    async def _call_gemini(self, prompt: str, model_name: str = "gemini") -> str:
-        """
-        Calls the Gemini API to generate a response.
+        Consolidated function to call any LLM through OpenRouter using requests.
         
         Args:
             prompt: The prompt to send to the model.
-            model_name: The name of the model to use.
+            model_name: The name of the model to use (OpenRouter compatible model name).
+            stream: Whether to stream the response.
+            temperature: The temperature parameter for the model (controls randomness).
+            max_tokens: The maximum number of tokens to generate.
             
         Returns:
-            str: The generated response.
+            Union[str, AsyncGenerator[str, None]]: The generated response or a stream of tokens.
         """
         try:
-            # Get the appropriate model instance
-            model = self._get_gemini_model(model_name)
+            # Set default model if not specified
+            if not model_name or model_name.lower() == "gemini":
+                model_name = "deepseek/deepseek-chat:free"
+                
+            # Map some common model aliases to their OpenRouter equivalents
+            model_mapping = {
+                "anthropic": "anthropic/claude-3.5-sonnet",
+                "openai": "openai/gpt-4o-mini",
+                "gpt-4": "openai/gpt-4-turbo"
+            }
             
-            # Use the official Gemini API client
-            response = await asyncio.to_thread(
-                model.generate_content,
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.4,
-                    top_p=0.95,
-                    top_k=40,
-                    max_output_tokens=2048,
+            if model_name.lower() in model_mapping:
+                model_name = model_mapping[model_name.lower()]
+                
+            logger.info(f"DEBUG - Using model {model_name} through OpenRouter")
+            
+            # Prepare messages in the format expected by OpenRouter
+            messages = [{"role": "user", "content": prompt}]
+            
+            # Prepare the payload
+            include_reasoning = False
+            if model_name.lower() == "deepseek/deepseek-r1:free" or "thinking" in model_name.lower() or "o3" in model_name.lower() or "o1" in model_name.lower():
+                include_reasoning = True
+            
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": stream,
+                "include_reasoning": include_reasoning
+            }
+            
+            # URL for OpenRouter API
+            url = f"{self.base_url}/chat/completions"
+            
+            # Handle streaming vs non-streaming
+            if stream:
+                logger.info(f"DEBUG - Using streaming mode")
+                
+                # This method returns an async generator
+                async def stream_generator():
+                    try:
+                        # Use httpx for async HTTP requests
+                        async with httpx.AsyncClient(timeout=60.0) as client:
+                            async with client.stream('POST', url, headers=self.headers, json=payload) as response:
+                                buffer = ""
+                                async for chunk in response.aiter_text():
+                                    buffer += chunk
+                                    while True:
+                                        # Find the next complete SSE line
+                                        line_end = buffer.find('\n')
+                                        if line_end == -1:
+                                            break
+
+                                        line = buffer[:line_end].strip()
+                                        buffer = buffer[line_end + 1:]
+
+                                        if line.startswith('data: '):
+                                            data = line[6:]
+                                            if data == '[DONE]':
+                                                break
+
+                                            try:
+                                                data_obj = json.loads(data)
+                                                content = data_obj["choices"][0]["delta"].get("content")
+                                                if content:
+                                                    logger.info(f"DEBUG - Streaming chunk: {content}")
+                                                    yield content
+                                                
+                                                # Check for reasoning content
+                                                reasoning = data_obj["choices"][0]["delta"].get("reasoning")
+                                                if reasoning:
+                                                    logger.info(f"DEBUG - Streaming reasoning: {reasoning}")
+                                                    # Wrap reasoning in a special delimiter for client identification
+                                                    yield f"<reasoning>{reasoning}</reasoning>"
+                                            except json.JSONDecodeError:
+                                                pass
+                    except Exception as e:
+                        logger.error(f"Error in OpenRouter stream: {e}")
+                        yield f"\nError: {str(e)}"
+                
+                # Return the generator
+                return stream_generator()
+            else:
+                # Non-streaming mode
+                logger.info(f"DEBUG - Using non-streaming mode")
+                
+                # Use requests in a thread to avoid blocking
+                response = await asyncio.to_thread(
+                    requests.post,
+                    url=url,
+                    headers=self.headers,
+                    json=payload
                 )
-            )
-            
-            return response.text
-        except Exception as e:
-            logger.error(f"Error calling Gemini API: {e}")
-            raise
-
-    async def _stream_gemini(self, prompt: str, model_name: str = "gemini") -> AsyncGenerator[str, None]:
-        """
-        Streams responses from the Gemini API.
-        
-        Args:
-            prompt: The prompt to send to the model.
-            model_name: The name of the model to use.
-            
-        Yields:
-            str: Chunks of the generated response.
-        """
-        try:
-            # This method should return an async generator, not execute it
-            # Create and return an async generator that will produce chunks on demand
-            
-            async def stream_generator():
-                # Get the appropriate model instance
-                model = self._get_gemini_model(model_name)
-                logger.info(f"DEBUG - _stream_gemini using model: {model_name}")
                 
-                try:
-                    # Use the official Gemini API client with streaming
-                    response = await asyncio.to_thread(
-                        model.generate_content,
-                        prompt,
-                        generation_config=genai.types.GenerationConfig(
-                            temperature=0.4,
-                            top_p=0.95,
-                            top_k=40,
-                            max_output_tokens=2048,
-                        ),
-                        stream=True
-                    )
-                    
-                    # Process the streaming response
-                    # Handle the response depending on its type
-                    if hasattr(response, '__iter__') and not hasattr(response, '__aiter__'):
-                        # It's a synchronous iterator, not an async iterator
-                        for chunk in response:
-                            if hasattr(chunk, 'text'):
-                                yield chunk.text
-                            await asyncio.sleep(0)  # Allow other tasks to run
-                    else:
-                        # It should be an async iterator
-                        async for chunk in response:
-                            if hasattr(chunk, 'text'):
-                                yield chunk.text
-                            await asyncio.sleep(0)  # Allow other tasks to run
-                    
-                except Exception as e:
-                    logger.error(f"Error in stream_generator: {e}")
-                    yield f"Error: {str(e)}"
-            
-            # Return the generator without awaiting it
-            return stream_generator()
+                if response.status_code != 200:
+                    error_msg = f"OpenRouter API error: {response.status_code} - {response.text}"
+                    logger.error(error_msg)
+                    raise HTTPException(status_code=500, detail=error_msg)
+                
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                
+                logger.info(f"DEBUG - Non-streaming response received")
+                return content
+                
         except Exception as e:
-            logger.error(f"Error setting up Gemini streaming: {e}")
-            # Return a generator that just yields the error
-            async def error_generator():
-                yield f"Error streaming from Gemini API: {str(e)}"
-            return error_generator()
+            logger.error(f"Error calling LLM via OpenRouter: {e}")
+            if stream:
+                # Return an error generator for streaming
+                async def error_generator():
+                    yield f"Error from LLM API: {str(e)}"
+                return error_generator()
+            else:
+                # For non-streaming, just raise the exception
+                raise
 
-    async def _call_anthropic(self, prompt: str) -> str:
-        """
-        Calls the Anthropic API to generate a response.
-        
-        Args:
-            prompt: The prompt to send to the model.
-            
-        Returns:
-            str: The generated response.
-        """
-        try:
-            # Use the official Anthropic API client
-            response = await asyncio.to_thread(
-                self.anthropic_client.messages.create,
-                model="claude-3-opus-20240229",
-                max_tokens=2048,
-                temperature=0.4,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            return response.content[0].text
-        except Exception as e:
-            logger.error(f"Error calling Anthropic API: {e}")
-            raise
-
-    async def _stream_anthropic(self, prompt: str) -> AsyncGenerator[str, None]:
-        """
-        Streams responses from the Anthropic API.
-        
-        Args:
-            prompt: The prompt to send to the model.
-            
-        Yields:
-            str: Chunks of the generated response.
-        """
-        try:
-            # This method should return an async generator, not execute it
-            async def stream_generator():
-                try:
-                    # Use the official Anthropic API client with streaming
-                    with self.anthropic_client.messages.stream(
-                        model="claude-3-opus-20240229",
-                        max_tokens=2048,
-                        temperature=0.4,
-                        messages=[{"role": "user", "content": prompt}]
-                    ) as stream:
-                        # Process the streaming response
-                        for chunk in stream:
-                            if chunk.type == "content_block_delta" and hasattr(chunk.delta, "text"):
-                                yield chunk.delta.text
-                            await asyncio.sleep(0)  # Allow other tasks to run
-                    
-                except Exception as e:
-                    logger.error(f"Error in Anthropic stream_generator: {e}")
-                    yield f"\nError: {str(e)}"
-            
-            # Return the generator without awaiting it
-            return stream_generator()
-        except Exception as e:
-            logger.error(f"Error setting up Anthropic streaming: {e}")
-            # Return a generator that just yields the error
-            async def error_generator():
-                yield f"Error setting up Anthropic stream: {str(e)}"
-            return error_generator()
-
-    async def _call_openai(self, prompt: str) -> str:
-        """
-        Calls the OpenAI API to generate a response.
-        
-        Args:
-            prompt: The prompt to send to the model.
-            
-        Returns:
-            str: The generated response.
-        """
-        try:
-            # Use the official OpenAI API client
-            response = await asyncio.to_thread(
-                self.openai_client.chat.completions.create,
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.4,
-                max_tokens=2048
-            )
-            
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error calling OpenAI API: {e}")
-            raise
-
-    async def _stream_openai(self, prompt: str) -> AsyncGenerator[str, None]:
-        """
-        Streams responses from the OpenAI API.
-        
-        Args:
-            prompt: The prompt to send to the model.
-            
-        Yields:
-            str: Chunks of the generated response.
-        """
-        try:
-            # This method should return an async generator, not execute it
-            async def stream_generator():
-                try:
-                    # Use the official OpenAI API client with streaming
-                    response = await asyncio.to_thread(
-                        self.openai_client.chat.completions.create,
-                        model="gpt-4-turbo",
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.4,
-                        max_tokens=2048,
-                        stream=True
-                    )
-                    
-                    # Process the streaming response
-                    for chunk in response:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            content = chunk.choices[0].delta.content
-                            yield content
-                        await asyncio.sleep(0)  # Allow other tasks to run
-                    
-                except Exception as e:
-                    logger.error(f"Error in OpenAI stream_generator: {e}")
-                    yield f"\nError: {str(e)}"
-            
-            # Return the generator without awaiting it
-            return stream_generator()
-        except Exception as e:
-            logger.error(f"Error setting up OpenAI streaming: {e}")
-            # Return a generator that just yields the error
-            async def error_generator():
-                yield f"Error setting up OpenAI stream: {str(e)}"
-            return error_generator()
-    
     def _extract_json_from_text(self, text: str) -> str:
         """
         Extracts a JSON object from text that might contain additional content.

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = Field(..., env="ANTHROPIC_API_KEY")
     GOOGLE_API_KEY: str = Field(..., env="GOOGLE_API_KEY")
     GEMINI_API_KEY: str = Field(..., env="GEMINI_API_KEY")
+    OPEN_ROUTER_API_KEY: str = Field(..., env="OPEN_ROUTER_API_KEY")
     
     # Code Execution Sandbox Configuration
     CODE_SANDBOX_URL: str = Field("http://localhost:8001", env="CODE_SANDBOX_URL")

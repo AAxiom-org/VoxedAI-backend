@@ -42,11 +42,11 @@ async def ingest_file(
         FileIngestResponse: The ingestion response.
     """
     try:
-        # Fetch the notebook file information
+        # Fetch the space file information
         file_id = str(request.file_id)
-        notebook_file = await file_service.get_notebook_file(file_id)
+        space_file = await file_service.get_space_file(file_id)
         
-        if not notebook_file:
+        if not space_file:
             raise HTTPException(status_code=404, detail=f"File with ID {file_id} not found")
         
         # Check if file metadata already exists
@@ -62,7 +62,7 @@ async def ingest_file(
         
         # Fetch raw file content
         try:
-            file_content = await file_service.fetch_file_content(notebook_file.file_path)
+            file_content = await file_service.fetch_file_content(space_file.file_path)
         except Exception as e:
             logger.error(f"Error fetching file content: {e}")
             raise HTTPException(
@@ -72,13 +72,13 @@ async def ingest_file(
             
         # Get the appropriate processor based on file type
         try:
-            processor = FileProcessorFactory.get_processor(notebook_file.file_type)
+            processor = FileProcessorFactory.get_processor(space_file.file_type)
             
             # Process file content
-            text_content = await processor.process(file_content, notebook_file.file_path)
+            text_content = await processor.process(file_content, space_file.file_path)
             
             # Extract metadata
-            file_metadata = await processor.get_metadata(file_content, notebook_file.file_path)
+            file_metadata = await processor.get_metadata(file_content, space_file.file_path)
         except ValueError as e:
             logger.error(f"Unsupported file type: {e}")
             raise HTTPException(
@@ -97,8 +97,8 @@ async def ingest_file(
         if not file_metadata.get("description"):
             llm_result = await llm_service.generate_file_description(
                 file_content=text_content,
-                file_name=notebook_file.file_name,
-                file_type=notebook_file.file_type
+                file_name=space_file.file_name,
+                file_type=space_file.file_type
             )
         else:
             llm_result = {
@@ -116,7 +116,7 @@ async def ingest_file(
         else:
             metadata = await file_service.create_file_metadata(
                 file_id=request.file_id,
-                file_path=notebook_file.file_path,
+                file_path=space_file.file_path,
                 description=llm_result.get("description"),
                 metadata=llm_result.get("metadata", {})
             )
@@ -124,9 +124,9 @@ async def ingest_file(
         # Process file content immediately instead of background task
         pinecone_id = await embedding_service.process_file_content(
             file_id=file_id,
-            file_path=notebook_file.file_path,
+            file_path=space_file.file_path,
             content=text_content,
-            source=notebook_file.file_name,
+            source=space_file.file_name,
             namespace=""
         )
         
@@ -185,7 +185,7 @@ async def delete_file(
     This endpoint:
     1. Deletes all Pinecone embeddings for the file
     2. Deletes the file from the Supabase storage "Vox" bucket
-    3. Deletes the file from the notebook_files table (which triggers cascade deletion)
+    3. Deletes the file from the space_files table (which triggers cascade deletion)
     
     Args:
         file_id: The ID of the file.
