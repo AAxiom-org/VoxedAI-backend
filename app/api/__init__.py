@@ -1,3 +1,3 @@
 """
-API package.
+API v1 package.
 """ 

@@ -2,7 +2,7 @@
 Pydantic schemas for file-related operations.
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -64,37 +64,6 @@ class VectorMetadata(BaseModel):
     chunk_index: int = Field(..., description="Index of the chunk in the document")
     source: str = Field(..., description="Source of the text (file name, document title, etc.)")
     additional_metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-
-class QueryResult(BaseModel):
-    """Schema for query results."""
-    text: str = Field(..., description="Text chunk")
-    score: float = Field(..., description="Similarity score")
-    file_id: str = Field(..., description="ID of the file")
-    file_path: str = Field(..., description="Path of the file in storage")
-    source: str = Field(..., description="Source of the text")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-
-class QueryRequest(BaseModel):
-    """Request schema for querying."""
-    query: str = Field(..., description="Query text")
-    top_k: int = Field(5, description="Number of results to return")
-    model_name: str = Field("gemini", description="LLM model to use (gemini, anthropic, openai)")
-    use_rag: bool = Field(True, description="Whether to use RAG")
-    stream: bool = Field(True, description="Whether to stream the response")
-    namespace: Optional[str] = Field(None, description="Namespace to query in Pinecone")
-    filter: Optional[Dict[str, Any]] = Field(None, description="Filter to apply to the query")
-    user_id: Optional[str] = Field(None, description="User ID to fetch toggled files for RAG")
-    is_coding_question: bool = Field(False, description="Whether the question is about coding")
-
-
-class QueryResponse(BaseModel):
-    """Response schema for querying."""
-    answer: str = Field(..., description="LLM-generated answer")
-    sources: List[QueryResult] = Field(default_factory=list, description="Sources used for the answer")
-    query_time_ms: float = Field(..., description="Query execution time in milliseconds")
-
 
 class DeleteByPineconeIdRequest(BaseModel):
     """Request schema for deleting vectors by Pinecone ID."""

@@ -9,7 +9,7 @@ from uuid import UUID
 from app.core.logging import logger
 from app.db.supabase import supabase_client
 from app.models.file_metadata import FileMetadata
-from app.models.space_file import NotebookFile
+from app.models.space_file import SpaceFile
 from app.services.file_processors import FileProcessorFactory
 
 
@@ -39,7 +39,7 @@ class FileService:
             raise
 
     @staticmethod
-    async def get_space_file(file_id: str) -> Optional[NotebookFile]:
+    async def get_space_file(file_id: str) -> Optional[SpaceFile]:
         """
         Fetches space file information from the database.
         
@@ -47,13 +47,13 @@ class FileService:
             file_id: The ID of the file.
             
         Returns:
-            Optional[NotebookFile]: The space file, or None if not found.
+            Optional[SpaceFile]: The space file, or None if not found.
         """
         try:
             file_dict = await supabase_client.get_space_file(file_id)
             if not file_dict:
                 return None
-            return NotebookFile.from_dict(file_dict)
+            return SpaceFile.from_dict(file_dict)
         except Exception as e:
             logger.error(f"Error fetching space file: {e}")
             raise

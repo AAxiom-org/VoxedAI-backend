@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from uuid import UUID
 
 
-class NotebookFile:
+class SpaceFile:
     """
     Represents a space file record in the database.
     """
@@ -41,15 +41,15 @@ class NotebookFile:
         self.created_at = created_at or datetime.now()
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "NotebookFile":
+    def from_dict(cls, data: Dict[str, Any]) -> "SpaceFile":
         """
-        Creates a NotebookFile instance from a dictionary.
+        Creates a SpaceFile instance from a dictionary.
         
         Args:
             data: The dictionary containing space file data.
             
         Returns:
-            NotebookFile: A new NotebookFile instance.
+            SpaceFile: A new SpaceFile instance.
         """
         return cls(
             id=data.get("id"),
@@ -64,7 +64,7 @@ class NotebookFile:
 
     def to_dict(self) -> Dict[str, Any]:
         """
-        Converts the NotebookFile instance to a dictionary.
+        Converts the SpaceFile instance to a dictionary.
         
         Returns:
             Dict[str, Any]: A dictionary representation of the space file.
