@@ -3,7 +3,8 @@ LLM service module for handling interactions with language models.
 """
 import json
 import asyncio
-from typing import Any, AsyncGenerator, Dict, Union
+import yaml
+from typing import Any, AsyncGenerator, Dict, Union, List
 
 import requests
 import httpx
@@ -281,6 +282,219 @@ class LLMService:
                     return text[start_idx:end_idx]
         
         raise ValueError("Malformed JSON object in the text")
+
+    async def get_decision(
+        self, 
+        query: str, 
+        context: Dict[str, Any] = None, 
+        action_history: List[Dict[str, Any]] = None,
+        stream: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Uses google/gemini-2.0-flash-001 to decide the next action in the agent workflow.
+        
+        Args:
+            query: The user's question or command
+            context: Any context gathered so far
+            action_history: Previous actions taken by the agent
+            stream: Whether to stream the response
+            
+        Returns:
+            Dict[str, Any]: A decision object containing action and parameters
+        """
+        try:
+            # Format previous actions for the prompt
+            history_text = ""
+            if action_history:
+                for i, action in enumerate(action_history):
+                    history_text += f"Action {i+1}: {action.get('action', 'unknown')} with parameters {action.get('parameters', {})}\n"
+            
+            # Format context for the prompt
+            context_text = ""
+            if context:
+                for key, value in context.items():
+                    if isinstance(value, str) and len(value) > 500:
+                        value = value[:500] + "... (truncated)"
+                    context_text += f"{key}: {value}\n"
+            
+            prompt = f"""
+            # AGENT WORKFLOW
+            
+            You are a decision-making component in an AI agent workflow. Your job is to decide the next action based on the user query and current context.
+            
+            ## USER QUERY
+            {query}
+            
+            ## CURRENT CONTEXT
+            {context_text or "No context available yet."}
+            
+            ## ACTION HISTORY
+            {history_text or "No previous actions taken."}
+            
+            ## AVAILABLE ACTIONS
+            You can choose from these actions:
+            
+            1. rag - Use Retrieval Augmented Generation to fetch relevant context
+               When to use: When you need information from the user's files, notes, or research
+            
+            2. tool - Use a specialized tool from the tool shed
+               When to use: When you need to perform a specific operation like code execution, analysis, etc.
+               Here are the tools available:
+                - none
+            
+            3. finish - Generate the final answer using all gathered context
+               When to use: When you have all the information needed to answer the user's query
+            
+            ## DECISION INSTRUCTIONS
+            1. Think step-by-step about what information or operations are needed to address the user query.
+            2. Return your decision in YAML format with 'action' and 'parameters'.
+            3. The action must be one of: "rag", "tool", or "finish".
+            
+            Return your response in this YAML format:
+            
+            ```yaml
+            thinking: |
+                <your step-by-step reasoning>
+            action: <action_name>
+            parameters:
+                <parameter_name>: <parameter_value>
+            ```
+            """
+            
+            # Use the gemini-2.0-flash-001 model for making decisions
+            # Always use non-streaming for the decision to ensure we get a complete response
+            # We'll handle exposing the thinking separately
+            response_text = await self._call_llm(
+                prompt=prompt,
+                model_name="google/gemini-2.0-flash-001",
+                stream=False,  # Decision node always uses non-streaming
+                temperature=0.2,
+                max_tokens=1024
+            )
+            
+            # Extract YAML from the response
+            yaml_text = self._extract_yaml_from_text(response_text)
+            
+            try:
+                decision = yaml.safe_load(yaml_text)
+            except yaml.YAMLError as e:
+                logger.error(f"Error parsing YAML from Gemini response: {e}")
+                logger.error(f"Raw YAML content that failed to parse: {yaml_text}")
+                
+                # Create a fallback decision with the model's raw response as thinking
+                return {
+                    "action": "finish",
+                    "thinking": f"Error parsing model response as YAML. Raw response: {response_text}",
+                    "parameters": {
+                        "reason": f"YAML parsing error: {str(e)}"
+                    }
+                }
+            
+            # Validate decision format
+            if not isinstance(decision, dict):
+                raise ValueError("Decision must be a dictionary")
+            
+            if "action" not in decision:
+                raise ValueError("Decision must include 'action'")
+            
+            if decision["action"] not in ["rag", "tool", "finish"]:
+                raise ValueError(f"Invalid action '{decision['action']}'. Must be one of: rag, tool, finish")
+            
+            if "parameters" not in decision:
+                decision["parameters"] = {}
+            
+            # Make sure the thinking is included
+            if "thinking" not in decision:
+                decision["thinking"] = "No detailed reasoning provided."
+                
+            # Log the decision and thinking
+            logger.info(f"Decision: {decision['action']} with parameters {decision['parameters']}")
+            logger.info(f"Thinking: {decision['thinking'][:100]}...")
+            
+            # If streaming is requested, immediately stream the thinking part to the client
+            if stream:
+                logger.info("Streaming thinking to client")
+                # Note: The thinking content is preserved in the decision object
+                # It will be extracted and sent to the client by the agent flow
+            
+            return decision
+            
+        except Exception as e:
+            logger.error(f"Error getting decision from Gemini: {e}")
+            # Default to finish action if there's an error
+            return {
+                "action": "finish",
+                "thinking": f"Error during decision making: {str(e)}",
+                "parameters": {
+                    "error": f"Error during decision making: {str(e)}"
+                }
+            }
+            
+    def _extract_yaml_from_text(self, text: str) -> str:
+        """
+        Extracts YAML content from text that might contain additional content.
+        
+        Args:
+            text: The text containing YAML content.
+            
+        Returns:
+            str: The extracted YAML string.
+        """
+        # Find YAML block denoted by ```yaml and ``` markers
+        yaml_start = text.find("```yaml")
+        if yaml_start != -1:
+            # Move past the ```yaml marker
+            yaml_start += 7
+            yaml_end = text.find("```", yaml_start)
+            if yaml_end != -1:
+                return text[yaml_start:yaml_end].strip()
+        
+        # If no markers, try to find what looks like YAML content
+        # Look for "action:" as a key indicator
+        action_idx = text.find("action:")
+        if action_idx != -1:
+            # Find the start of the YAML-like content
+            yaml_start = text.rfind("\n", 0, action_idx)
+            if yaml_start == -1:
+                yaml_start = 0
+            else:
+                yaml_start += 1  # Skip the newline
+                
+            return text[yaml_start:].strip()
+            
+        # Handle cases where the model returns a natural language response first and then the YAML
+        # This happens often with Gemini - it gives explanations before structured output
+        lines = text.split('\n')
+        yaml_lines = []
+        yaml_section_started = False
+        
+        for line in lines:
+            line = line.strip()
+            # Check for key YAML indicators
+            if line.startswith('action:'):
+                yaml_section_started = True
+                yaml_lines.append(line)
+            elif yaml_section_started and (line.startswith('thinking:') or line.startswith('parameters:') 
+                                          or line.startswith('-') or ':' in line):
+                yaml_lines.append(line)
+        
+        if yaml_lines:
+            # If we only found action but no thinking, add a minimal thinking section
+            if not any(line.startswith('thinking:') for line in yaml_lines):
+                yaml_lines.insert(0, 'thinking: |')
+                yaml_lines.insert(1, '  Based on the query, I\'ve decided on the appropriate action.')
+            
+            return '\n'.join(yaml_lines)
+        
+        # If we can't extract YAML, try to construct a minimal valid YAML from the text
+        logger.warning("Could not extract YAML from decision text. Constructing minimal YAML.")
+        # Create a synthetic response with the text as thinking
+        return f"""thinking: |
+  {text.replace('\n', '\n  ')}
+action: finish
+parameters:
+  reason: No structured decision found
+"""
 
 
 # Global instance of the LLM service

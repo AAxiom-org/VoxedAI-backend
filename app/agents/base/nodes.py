@@ -1,119 +1,236 @@
-from typing import List, Dict, Any
-from app.services.llm_service import llm_service
-from app.services.tool_shed import tool_shed
-from app.services.rag_service import rag_service
-
-from pocketflow import Node
-import yaml
-
-class DecisionNode(Node):
-    def prep(self, shared):
-        # Get the task and current context
-        context = {
-            "task": shared.get("task", ""),
-            "previous_actions": shared.get("action_history", []),
-            "current_state": shared.get("current_state", {}),
-        }
-        return context
-    
-    def exec(self, context):
-        prompt = f"""
-### CONTEXT
-Task: {context['task']}
-Previous Actions: {context['previous_actions']}
-Current State: {context['current_state']}
-
-### ACTION SPACE
-[1] search_web
-    Description: Search the web for information
-    Parameters:
-        - query (str): What to search for
-
-[2] calculate
-    Description: Perform a calculation
-    Parameters:
-        - expression (str): Math expression to evaluate
-
-[3] finish
-    Description: Complete the task and provide final answer
-    Parameters:
-        - result (str): Final answer/result
-
-### NEXT ACTION
-Based on the current context and available actions, decide what to do next.
-Return your response in YAML format:
-
-```yaml
-thinking: |
-    <your step-by-step reasoning>
-action: <action_name>
-parameters:
-    <parameter_name>: <parameter_value>
-```
 """
-        response = llm_service.get_decision(prompt)
-        # Extract YAML part
-        yaml_str = response.split("```yaml")[1].split("```")[0].strip()
-        decision = yaml.safe_load(yaml_str)
+Node implementations for the agent workflow using PocketFlow.
+"""
+from typing import Dict, Any, List
+import logging
+
+from pocketflow import Node, AsyncNode
+from app.services.llm_service import llm_service
+from app.core.logging import logger
+
+
+class DecisionNode(AsyncNode):
+    """
+    Decision node that determines the next action in the workflow.
+    Uses google/gemini-2.0-flash-001 to decide between RAG, Tool, or Finish actions.
+    """
+    
+    async def prep_async(self, shared):
+        # Get the user query and any context gathered so far
+        query = shared.get("query", "")
+        context = shared.get("context", {})
+        action_history = shared.get("action_history", [])
+        stream = shared.get("stream", False)
         
-        # Validate decision format
-        assert "action" in decision, "Decision must include action"
-        assert "parameters" in decision, "Decision must include parameters"
-        assert decision["action"] in ["search_web", "calculate", "finish"]
+        logger.info(f"DecisionNode: Processing query '{query}' (stream={stream})")
+        
+        return {
+            "query": query,
+            "context": context,
+            "action_history": action_history,
+            "stream": stream
+        }
+    
+    async def exec_async(self, prep_res):
+        query = prep_res["query"]
+        context = prep_res["context"]
+        action_history = prep_res["action_history"]
+        stream = prep_res.get("stream", False)
+        
+        # Use the LLM service to get the decision
+        decision = await llm_service.get_decision(
+            query=query,
+            context=context,
+            action_history=action_history,
+            stream=stream
+        )
         
         return decision
-
-    def post(self, shared, prep_res, decision):
-        # Store the decision in action history
-        history = shared.get("action_history", [])
-        history.append(decision)
-        shared["action_history"] = history
+    
+    async def post_async(self, shared, prep_res, decision):
+        # Store the decision in the shared context
+        action_history = shared.get("action_history", [])
+        thinking_history = shared.get("thinking_history", [])
+        
+        # Store the thinking separately for client exposure
+        if "thinking" in decision:
+            thinking = decision.get("thinking", "")
+            thinking_history.append({
+                "step": len(action_history) + 1,
+                "thinking": thinking
+            })
+            shared["thinking_history"] = thinking_history
+            
+            # Also add it to the context for the final response
+            context = shared.get("context", {})
+            if "decision_thinking" not in context:
+                context["decision_thinking"] = []
+            context["decision_thinking"].append({
+                "step": len(action_history) + 1,
+                "thinking": thinking
+            })
+            shared["context"] = context
+        
+        action_history.append(decision)
+        shared["action_history"] = action_history
         shared["last_decision"] = decision
         
-        # Return the action name as the next transition
-        return decision["action"]
+        # Return the action as the next node to transition to
+        action = decision.get("action", "finish")
+        logger.info(f"DecisionNode: Next action '{action}'")
         
-class ToolShed:
-    def __init__(self, input: str):
-        self.input = input
+        return action
+
+
+class RAGNode(AsyncNode):
+    """
+    Retrieval-Augmented Generation node.
+    Retrieves relevant context from the knowledge base.
+    Currently a placeholder that returns a message.
+    """
     
-    def exec(self):
-        tools = tool_shed.get_tools()
-        tool = llm_service.get_tool(self.input, tools)
-        results = tool.execute(self.input)
-        return results
+    async def prep_async(self, shared):
+        query = shared.get("query", "")
+        context = shared.get("context", {})
+        space_id = shared.get("space_id", "")
+        stream = shared.get("stream", False)
+        
+        logger.info(f"RAGNode: Processing query for space '{space_id}' (stream={stream})")
+        
+        return {
+            "query": query,
+            "context": context,
+            "space_id": space_id,
+            "stream": stream
+        }
     
-    def post(self, shared, prep_res, results):
-        current_state = shared.get("current_state", {})
-        current_state["last_search_results"] = results
-        shared["current_state"] = current_state
+    async def exec_async(self, prep_res):
+        # Placeholder implementation
+        return {
+            "message": "RAG has not been implemented yet, continue",
+            "result_type": "placeholder"
+        }
+    
+    async def post_async(self, shared, prep_res, results):
+        # Update the context with the RAG results
+        context = shared.get("context", {})
+        context["rag_results"] = results
+        shared["context"] = context
+        
+        # Always go back to the decision node
         return "decide"
-        
-class RAGService:
-    def __init__(self, query: str):
-        self.query = query
-        
-    def exec(self):
-        rag_query = llm_service.get_rag_query(self.query)
-        results = rag_service.search(rag_query)
-        return results
+
+
+class ToolShedNode(AsyncNode):
+    """
+    Tool Shed node that executes specialized tools.
+    Currently a placeholder that returns a message.
+    """
     
-    def post(self, shared, prep_res, results):
-        current_state = shared.get("current_state", {})
-        current_state["last_search_results"] = results
-        shared["current_state"] = current_state
+    async def prep_async(self, shared):
+        query = shared.get("query", "")
+        context = shared.get("context", {})
+        last_decision = shared.get("last_decision", {})
+        tool_params = last_decision.get("parameters", {})
+        stream = shared.get("stream", False)
+        
+        logger.info(f"ToolShedNode: Executing tool with parameters: {tool_params} (stream={stream})")
+        
+        return {
+            "query": query,
+            "context": context,
+            "tool_params": tool_params,
+            "stream": stream
+        }
+    
+    async def exec_async(self, prep_res):
+        # Placeholder implementation
+        return {
+            "message": "Tool Shed has not been implemented yet, continue",
+            "result_type": "placeholder"
+        }
+    
+    async def post_async(self, shared, prep_res, results):
+        # Update the context with the tool results
+        context = shared.get("context", {})
+        context["tool_results"] = results
+        shared["context"] = context
+        
+        # Always go back to the decision node
         return "decide"
+
+
+class FinishNode(AsyncNode):
+    """
+    Finish node that generates the final response using all gathered context.
+    """
     
-    
-class Finish:
-    def __init__(self, input: str):
-        self.input = input
+    async def prep_async(self, shared):
+        query = shared.get("query", "")
+        context = shared.get("context", {})
+        action_history = shared.get("action_history", [])
+        view = shared.get("view", "")
+        stream = shared.get("stream", False)
         
-    def exec(self):
-        return llm_service.generate_answer(self.input)
+        logger.info(f"FinishNode: Generating final response (stream={stream})")
+        
+        return {
+            "query": query,
+            "context": context,
+            "action_history": action_history,
+            "view": view,
+            "stream": stream
+        }
     
-    def post(self, shared, prep_res, results):
-        current_state = shared.get("current_state", {})
-        current_state["last_search_results"] = results
-        shared["current_state"] = current_state
-        return "finish"
+    async def exec_async(self, prep_res):
+        query = prep_res["query"]
+        context = prep_res.get("context", {})
+        view = prep_res.get("view", "")
+        stream = prep_res.get("stream", False)
+        
+        # Format the context for the final response
+        rag_results = context.get("rag_results", {}).get("message", "No RAG results available")
+        tool_results = context.get("tool_results", {}).get("message", "No tool results available")
+        
+        # Also include any thinking/reasoning from decision steps
+        decision_thinking = ""
+        if "decision_thinking" in context:
+            for item in context["decision_thinking"]:
+                decision_thinking += f"Step {item['step']} thinking:\n{item['thinking']}\n\n"
+        
+        prompt = f"""
+        # USER QUERY
+        {query}
+        
+        # CONTEXT INFORMATION
+        RAG Results: {rag_results}
+        Tool Results: {tool_results}
+        
+        # USER VIEW (active content)
+        {view or "No active content"}
+        
+        # DECISION REASONING
+        {decision_thinking or "No decision reasoning available"}
+        
+        # TASK
+        Based on the user's query and the context information, provide a comprehensive and accurate response.
+        Be direct, concise, and helpful. If you cannot provide a complete answer due to missing information,
+        acknowledge this and provide the best response possible with the available information.
+        """
+                
+        # Generate the final response
+        response_text = await llm_service._call_llm(
+            prompt=prompt,
+            stream=stream,
+            temperature=0.3,
+            max_tokens=2048
+        )
+        
+        return response_text
+    
+    async def post_async(self, shared, prep_res, response_text):
+        # Set the final response in the shared context
+        shared["final_response"] = response_text
+        
+        # Return finish to indicate completion
+        return "complete"
