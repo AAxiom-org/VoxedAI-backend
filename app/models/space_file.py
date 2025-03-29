@@ -19,7 +19,7 @@ class SpaceFile:
     file_type: str
     file_size: int
     created_at: datetime
-
+    is_note: bool
     def __init__(
         self,
         id: UUID,
@@ -30,6 +30,7 @@ class SpaceFile:
         file_type: str,
         file_size: int,
         created_at: Optional[datetime] = None,
+        is_note: bool = False,
     ):
         self.id = id
         self.space_id = space_id
@@ -39,7 +40,7 @@ class SpaceFile:
         self.file_type = file_type
         self.file_size = file_size
         self.created_at = created_at or datetime.now()
-
+        self.is_note = is_note
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SpaceFile":
         """
@@ -60,6 +61,7 @@ class SpaceFile:
             file_type=data.get("file_type"),
             file_size=data.get("file_size"),
             created_at=data.get("created_at"),
+            is_note=data.get("is_note", False),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -78,6 +80,7 @@ class SpaceFile:
             "file_type": self.file_type,
             "file_size": self.file_size,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "is_note": self.is_note,
         }
 
     @property

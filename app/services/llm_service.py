@@ -239,6 +239,19 @@ class LLMService:
                     raise HTTPException(status_code=500, detail=error_msg)
                 
                 data = response.json()
+                logger.debug(f"Response data: {data}")
+                
+                # Check if the expected keys exist in the response
+                if "choices" not in data:
+                    error_msg = f"Unexpected response format from OpenRouter. Missing 'choices' key. Response: {data}"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                
+                if not data["choices"] or "message" not in data["choices"][0]:
+                    error_msg = f"Unexpected response format from OpenRouter. Empty choices or missing 'message'. Response: {data}"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                
                 content = data["choices"][0]["message"]["content"]
                 
                 logger.info(f"DEBUG - Non-streaming response received")
@@ -318,47 +331,45 @@ class LLMService:
                     context_text += f"{key}: {value}\n"
             
             prompt = f"""
-            # AGENT WORKFLOW
-            
-            You are a decision-making component in an AI agent workflow. Your job is to decide the next action based on the user query and current context.
-            
-            ## USER QUERY
-            {query}
-            
-            ## CURRENT CONTEXT
-            {context_text or "No context available yet."}
-            
-            ## ACTION HISTORY
-            {history_text or "No previous actions taken."}
-            
-            ## AVAILABLE ACTIONS
-            You can choose from these actions:
-            
-            1. rag - Use Retrieval Augmented Generation to fetch relevant context
-               When to use: When you need information from the user's files, notes, or research
-            
-            2. tool - Use a specialized tool from the tool shed
-               When to use: When you need to perform a specific operation like code execution, analysis, etc.
-               Here are the tools available:
-                - none
-            
-            3. finish - Generate the final answer using all gathered context
-               When to use: When you have all the information needed to answer the user's query
-            
-            ## DECISION INSTRUCTIONS
-            1. Think step-by-step about what information or operations are needed to address the user query.
-            2. Return your decision in YAML format with 'action' and 'parameters'.
-            3. The action must be one of: "rag", "tool", or "finish".
-            
-            Return your response in this YAML format:
-            
-            ```yaml
-            thinking: |
-                <your step-by-step reasoning>
-            action: <action_name>
-            parameters:
-                <parameter_name>: <parameter_value>
-            ```
+                You are a decision-making component in an AI agent workflow. Your job is to decide the next action based on the user query and current context. **Only route to an action when additional information or an operation is explicitly necessary.** For simple queries or interactions (e.g., greetings, basic chat, or queries clearly answerable from existing knowledge), immediately proceed to finish.
+
+                ## USER QUERY
+                {query}
+
+                ## CURRENT CONTEXT
+                {context_text or "No context available yet."}
+
+                ## ACTION HISTORY
+                {history_text or "No previous actions taken."}
+
+                ## AVAILABLE ACTIONS
+                You can choose from these actions only if clearly required:
+
+                1. **rag** - Use Retrieval Augmented Generation to fetch relevant context  
+                **When to use:** You need specific information from the user's files, notes, or research to accurately respond.
+
+                2. **tool** - Use a specialized tool from the tool shed  
+                **When to use:** You must perform a particular operation (e.g., file reading, note editing, code execution, data analysis).
+                - Current tools available:
+                    - file_interaction: Read all files in the workspace, edit note files, and create new note files
+
+                3. **finish** - Generate the final answer using the context and knowledge you already possess  
+                **When to use:** You already have sufficient information or the query does not require external resources or operations.
+
+                ## DECISION INSTRUCTIONS
+                1. Consider carefully if external context or specialized operations are genuinely needed.
+                2. For basic interactions (such as greetings or casual conversation), choose **finish** directly without additional actions.
+                3. Clearly articulate your decision-making process step-by-step.
+
+                Return your decision in this YAML format:
+
+                ```yaml
+                thinking: |
+                    <your step-by-step reasoning>
+                action: <action_name>
+                parameters:
+                    <parameter_name>: <parameter_value>
+                ```
             """
             
             # Use the gemini-2.0-flash-001 model for making decisions
@@ -368,7 +379,7 @@ class LLMService:
                 prompt=prompt,
                 model_name="google/gemini-2.0-flash-001",
                 stream=False,  # Decision node always uses non-streaming
-                temperature=0.2,
+                temperature=0,
                 max_tokens=1024
             )
             
@@ -376,6 +387,7 @@ class LLMService:
             yaml_text = self._extract_yaml_from_text(response_text)
             
             try:
+                logger.info(f"Decision: {yaml.safe_load(yaml_text)}")
                 decision = yaml.safe_load(yaml_text)
             except yaml.YAMLError as e:
                 logger.error(f"Error parsing YAML from Gemini response: {e}")

@@ -21,9 +21,12 @@ class ThinkingStep(BaseModel):
 class AgentRequest(BaseModel):
     """Schema for agent request."""
     space_id: str = Field(..., description="ID of the space the query pertains to")
+    active_file_id: Optional[str] = Field(None, description="ID of the active file the user is working with")
     query: str = Field(..., description="The user's question or command")
-    view: Optional[str] = Field(None, description="The content the user is actively working with")
     stream: bool = Field(False, description="Whether to stream the response")
+    model_name: Optional[str] = Field(None, description="Optional model name to use for the response")
+    top_k: Optional[int] = Field(None, description="Optional number of top results to consider")
+    user_id: Optional[str] = Field(None, description="Optional user ID for tracking or personalization")
 
 
 class AgentResponse(BaseModel):

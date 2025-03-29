@@ -31,14 +31,14 @@ async def run_agent(
     3. Returns the response
     
     Args:
-        request: Contains space_id, query, view, and stream parameters
+        request: Contains space_id, query, active_file_id, stream, model_name, top_k, and user_id parameters
         background_tasks: For handling cleanup tasks
         
     Returns:
         AgentResponse or StreamingResponse: Contains the agent's response and metadata
     """
     try:
-        logger.info(f"Executing agent workflow for space_id={request.space_id}, query='{request.query}', stream={request.stream}")
+        logger.info(f"Executing agent workflow for space_id={request.space_id}, query='{request.query}', stream={request.stream}, active_file_id={request.active_file_id}, model_name={request.model_name}, top_k={request.top_k}, user_id={request.user_id}")
         
         start_time = time.time()
         
@@ -50,8 +50,11 @@ async def run_agent(
                     response_generator = await run_agent_flow(
                         space_id=request.space_id,
                         query=request.query,
-                        view=request.view,
-                        stream=True
+                        active_file_id=request.active_file_id,
+                        stream=True,
+                        model_name=request.model_name,
+                        top_k=request.top_k,
+                        user_id=request.user_id
                     )
                     
                     # Track if we've sent the sources event
@@ -73,6 +76,72 @@ async def run_agent(
                             
                         elif "[THINKING_END]" in chunk or "[RESPONSE_START]" in chunk or "[RESPONSE_END]" in chunk:
                             # Skip these marker chunks
+                            continue
+                            
+                        elif chunk.startswith("[EVENT:"):
+                            # Parse the event type and data
+                            event_end = chunk.find("]", 7)
+                            if event_end > 7:
+                                event_type = chunk[7:event_end]
+                                event_data = chunk[event_end+1:chunk.find("[/EVENT]")]
+                                
+                                # Handle different event types
+                                if event_type == "decision":
+                                    event_obj = {
+                                        "type": "agent_event",
+                                        "event_type": "decision",
+                                        "decision": event_data
+                                    }
+                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    
+                                elif event_type == "file_edit_start":
+                                    event_obj = {
+                                        "type": "agent_event",
+                                        "event_type": "file_edit_start",
+                                        "file_id": event_data
+                                    }
+                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    
+                                elif event_type == "file_edit_complete":
+                                    event_obj = {
+                                        "type": "agent_event", 
+                                        "event_type": "file_edit_complete",
+                                        "file_id": event_data
+                                    }
+                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    
+                                elif event_type == "tool_complete":
+                                    event_obj = {
+                                        "type": "agent_event",
+                                        "event_type": "tool_complete", 
+                                        "tool": event_data
+                                    }
+                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    
+                                elif event_type == "rag_complete":
+                                    event_obj = {
+                                        "type": "agent_event",
+                                        "event_type": "rag_complete",
+                                        "message": event_data
+                                    }
+                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    
+                                # Handle all other event types with a standard format
+                                else:
+                                    # Special handling for error events to maintain compatibility
+                                    if event_type == "error":
+                                        event_obj = {
+                                            "type": "error",
+                                            "message": event_data
+                                        }
+                                    else:
+                                        # Pass through all other events with their type and data
+                                        event_obj = {
+                                            "type": "agent_event",
+                                            "event_type": event_type,
+                                            "data": event_data
+                                        }
+                                    yield f"data: {json.dumps(event_obj)}\n\n"
                             continue
                             
                         elif "Step " in chunk and "Reasoning:" in chunk:
@@ -117,14 +186,18 @@ async def run_agent(
         response_data = await run_agent_flow(
             space_id=request.space_id,
             query=request.query,
-            view=request.view,
-            stream=False
+            active_file_id=request.active_file_id,
+            stream=False,
+            model_name=request.model_name,
+            top_k=request.top_k,
+            user_id=request.user_id
         )
         
         # Calculate query time
         query_time_ms = int((time.time() - start_time) * 1000)
         
         # The response_data is now a dict with 'response' and 'thinking' keys
+        # TODO: Handle Reasoning tokens the same way that we handle thinking tokens
         return AgentResponse(
             success=True,
             response=response_data["response"],

@@ -5,10 +5,12 @@
 # ToolShed - "decide" >> DecisionModel
 # RAGService - "decide" >> DecisionModel
 
-from typing import Union, Dict, Any, AsyncGenerator
+from typing import Union, Dict, Any, AsyncGenerator, Optional
 from pocketflow import AsyncFlow
 from app.agents.base.nodes import DecisionNode, RAGNode, ToolShedNode, FinishNode
 from app.core.logging import logger
+import asyncio
+import traceback
 
 
 def create_agent_flow() -> AsyncFlow:
@@ -52,29 +54,43 @@ def create_agent_flow() -> AsyncFlow:
     return AsyncFlow(start=decision_node)
 
 
-async def run_agent_flow(space_id: str, query: str, view: str = None, stream: bool = False) -> Union[str, AsyncGenerator[str, None], Dict[str, Any]]:
+async def run_agent_flow(
+    space_id: str, 
+    query: str, 
+    active_file_id: Optional[str] = None,
+    stream: bool = False,
+    model_name: Optional[str] = None,
+    top_k: Optional[int] = None,
+    user_id: Optional[str] = None
+) -> Union[str, AsyncGenerator[str, None], Dict[str, Any]]:
     """
     Run the agent flow with the given inputs.
     
     Args:
         space_id: ID of the space the query pertains to
         query: The user's question or command
-        view: Optional content the user is actively working with
+        active_file_id: ID of the file the user is actively working with, or None if no file is active
         stream: Whether to stream the response
+        model_name: Optional model name to use for the response
+        top_k: Optional number of top results to consider
+        user_id: Optional user ID for tracking or personalization
         
     Returns:
         Union[str, AsyncGenerator[str, None], Dict[str, Any]]: 
             - If stream=True: AsyncGenerator yielding response chunks
             - If stream=False: String response or Dict with response and metadata
     """
-    logger.info(f"Running agent flow for space_id={space_id}, query='{query}', stream={stream}")
+    logger.info(f"Running agent flow for space_id={space_id}, query='{query}', stream={stream}, active_file_id={active_file_id}, model_name={model_name}, top_k={top_k}, user_id={user_id}")
     
     # Create a shared context for the flow
     shared = {
         "space_id": space_id,
+        "active_file_id": active_file_id,
         "query": query,
-        "view": view,
         "stream": stream,
+        "model_name": model_name,
+        "top_k": top_k,
+        "user_id": user_id,
         "context": {},
         "action_history": [],
         "thinking_history": []
@@ -89,21 +105,67 @@ async def run_agent_flow(space_id: str, query: str, view: str = None, stream: bo
             # First, yield a special marker to indicate the start of thinking
             yield "[THINKING_START]\n"
             
-            # Run the flow asynchronously
-            await flow.run_async(shared)
+            # Set up a queue for async communication between nodes and this generator
+            shared["event_queue"] = asyncio.Queue()
             
-            # After the flow is done, get the thinking history
-            thinking_history = shared.get("thinking_history", [])
+            # Start a task to run the flow asynchronously
+            flow_task = asyncio.create_task(flow.run_async(shared))
             
-            # Yield each thinking step
-            for step in thinking_history:
-                yield f"Step {step['step']} Reasoning:\n{step['thinking']}\n\n"
+            # Process events as they come in
+            running = True
+            while running or not shared["event_queue"].empty():
+                try:
+                    # Try to get an event from the queue with a timeout
+                    try:
+                        event = await asyncio.wait_for(shared["event_queue"].get(), 0.1)
+                        
+                        # Process the event based on its type
+                        if event["type"] == "decision":
+                            # Send a special marker for decision events
+                            yield f"[EVENT:{event['type']}]{event['decision']}[/EVENT]\n"
+                        elif event["type"] == "file_edit_start":
+                            # Send a special marker for file edit start events
+                            yield f"[EVENT:{event['type']}]{event['file_id']}[/EVENT]\n"
+                        elif event["type"] == "file_edit_complete":
+                            # Send a special marker for file edit complete events
+                            yield f"[EVENT:{event['type']}]{event['file_id']}[/EVENT]\n"
+                        elif event["type"] == "thinking":
+                            # Send thinking steps as before
+                            yield f"Step {event['step']} Reasoning:\n{event['thinking']}\n\n"
+                        elif event["type"] == "flow_complete":
+                            running = False
+                    except asyncio.TimeoutError:
+                        # Check if the flow has completed
+                        if flow_task.done():
+                            running = False
+                        continue
+                except Exception as e:
+                    logger.error(f"Error processing event: {str(e)}")
+                    yield f"[EVENT:error]Error processing event: {str(e)}[/EVENT]\n"
+            
+            # Wait for the flow task to complete
+            try:
+                await flow_task
+            except Exception as e:
+                logger.error(f"Error in flow execution: {str(e)}")
+                logger.error(f"Flow execution traceback: {traceback.format_exc()}")
+                yield f"[EVENT:error]Error in flow execution: {str(e)}[/EVENT]\n"
             
             # Yield a marker to indicate the end of thinking and start of response
             yield "[THINKING_END]\n[RESPONSE_START]\n"
             
             # Get the final response
+            if "final_response" not in shared:
+                logger.error("No final_response in shared context - shared keys: " + str(shared.keys()))
+                final_response = "I encountered an error while processing your request. Please try again."
+                yield final_response
+                yield "[RESPONSE_END]"
+                return
+                
             final_response = shared.get("final_response", "No response generated")
+            
+            # Log the type of final_response for debugging
+            logger.info(f"Final response type: {type(final_response)}, value preview: {str(final_response)[:100]}")
             
             # If the final response is a generator (streaming from the LLM), yield from it
             if hasattr(final_response, '__aiter__'):
