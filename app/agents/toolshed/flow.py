@@ -1,10 +1,10 @@
-# app/toolshed/flow.py
+# app/agents/toolshed/flow.py
 
 from typing import Union, Dict, Any, AsyncGenerator, List, Optional
 from pocketflow import AsyncFlow
-from app.toolshed.nodes import ToolShedDecisionNode
-from app.tools.file import FileInteraction
-from app.tools.web_search import WebSearch
+from app.agents.toolshed.nodes import ToolShedDecisionNode
+from app.agents.tools.file import FileInteraction
+from app.agents.tools.web_search import WebSearch
 from app.core.logging import logger
 import asyncio
 

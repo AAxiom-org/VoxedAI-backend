@@ -38,6 +38,10 @@ async def run_agent(
         AgentResponse or StreamingResponse: Contains the agent's response and metadata
     """
     try:
+        # Force streaming to true unless explicitly set to false
+        if request.stream is None:
+            request.stream = True
+            
         logger.info(f"Executing agent workflow for space_id={request.space_id}, query='{request.query}', stream={request.stream}, active_file_id={request.active_file_id}, model_name={request.model_name}, top_k={request.top_k}, user_id={request.user_id}")
         
         start_time = time.time()
@@ -59,6 +63,8 @@ async def run_agent(
                     
                     # Track if we've sent the sources event
                     sources_sent = False
+                    # Buffer for collecting reasoning content
+                    reasoning_buffer = ""
                     
                     # Stream the response chunks as SSE events
                     async for chunk in response_generator:
@@ -144,6 +150,39 @@ async def run_agent(
                                     yield f"data: {json.dumps(event_obj)}\n\n"
                             continue
                             
+                        elif "<reasoning>" in chunk:
+                            # Extract reasoning tags and send immediately
+                            start_idx = chunk.find("<reasoning>") + len("<reasoning>")
+                            end_idx = chunk.find("</reasoning>", start_idx)
+                            
+                            if end_idx > start_idx:
+                                # Extract the reasoning content
+                                reasoning = chunk[start_idx:end_idx].strip()
+                                
+                                # Append to reasoning buffer
+                                reasoning_buffer += reasoning
+                                
+                                # Send the reasoning event
+                                reasoning_data = {
+                                    "type": "reasoning",
+                                    "content": reasoning_buffer
+                                }
+                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                
+                                # Clear reasoning buffer after sending
+                                reasoning_buffer = ""
+                                
+                                # Remove the reasoning part from the chunk before processing the rest
+                                chunk = chunk[:start_idx - len("<reasoning>")] + chunk[end_idx + len("</reasoning>"):]
+                            
+                            # If chunk still has content, process it normally
+                            if chunk.strip():
+                                token_data = {
+                                    "type": "token",
+                                    "content": chunk
+                                }
+                                yield f"data: {json.dumps(token_data)}\n\n"
+                            
                         elif "Step " in chunk and "Reasoning:" in chunk:
                             # This is thinking/reasoning content
                             reasoning_data = {
@@ -153,7 +192,7 @@ async def run_agent(
                             yield f"data: {json.dumps(reasoning_data)}\n\n"
                             
                         else:
-                            # This is a token from the LLM
+                            # This is a token from the LLM - send immediately without buffering
                             token_data = {
                                 "type": "token",
                                 "content": chunk
@@ -182,7 +221,7 @@ async def run_agent(
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )
         
-        # For non-streaming responses, run the agent flow and return the complete response
+        # For non-streaming responses (explicit request for non-streaming)
         response_data = await run_agent_flow(
             space_id=request.space_id,
             query=request.query,
@@ -196,14 +235,26 @@ async def run_agent(
         # Calculate query time
         query_time_ms = int((time.time() - start_time) * 1000)
         
+        # Handle reasoning tokens in the non-streaming response
+        response_text = response_data.get("response", "")
+        reasoning = ""
+        
+        # Extract reasoning if present in tags
+        if "<reasoning>" in response_text and "</reasoning>" in response_text:
+            start_idx = response_text.find("<reasoning>") + len("<reasoning>")
+            end_idx = response_text.find("</reasoning>")
+            if end_idx > start_idx:
+                reasoning = response_text[start_idx:end_idx].strip()
+                response_text = response_text[:start_idx - len("<reasoning>")] + response_text[end_idx + len("</reasoning>"):]
+        
         # The response_data is now a dict with 'response' and 'thinking' keys
-        # TODO: Handle Reasoning tokens the same way that we handle thinking tokens
         return AgentResponse(
             success=True,
-            response=response_data["response"],
+            response=response_text.strip(),
             metadata={
                 "flow_type": "pocketflow_agent",
-                "thinking": response_data["thinking"],
+                "thinking": response_data.get("thinking", []),
+                "reasoning": reasoning,  # Add extracted reasoning
                 "query_time_ms": query_time_ms,
                 "sources": []  # Empty sources placeholder
             }

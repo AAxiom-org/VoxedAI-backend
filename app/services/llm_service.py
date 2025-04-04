@@ -155,6 +155,7 @@ class LLMService:
             
             # Prepare messages in the format expected by OpenRouter
             messages = [{"role": "user", "content": prompt}]
+            logger.info(f"DEBUG - Prompt being sent to llm: {prompt}")
             
             # Prepare the payload
             include_reasoning = False
@@ -304,7 +305,8 @@ class LLMService:
         stream: bool = False
     ) -> Dict[str, Any]:
         """
-        Uses google/gemini-2.0-flash-001 to decide the next action in the agent workflow.
+        Uses a language model to decide the next action in the agent workflow.
+        Returns just the action name for speed.
         
         Args:
             query: The user's question or command
@@ -319,129 +321,70 @@ class LLMService:
             # Format previous actions for the prompt
             history_text = ""
             if action_history:
-                for i, action in enumerate(action_history):
-                    history_text += f"Action {i+1}: {action.get('action', 'unknown')} with parameters {action.get('parameters', {})}\n"
-            
-            # Format context for the prompt
-            context_text = ""
-            if context:
-                for key, value in context.items():
-                    if isinstance(value, str) and len(value) > 500:
-                        value = value[:500] + "... (truncated)"
-                    context_text += f"{key}: {value}\n"
-            
+                for i, action in enumerate(action_history[-3:]):  # Only use last 3 actions for brevity
+                    history_text += f"Action {i+1}: {action.get('action', 'unknown')}\n"
+            # TODO: Add rag back when implemented
             prompt = f"""
-                You are a decision-making component in an AI agent workflow. Your job is to decide the next action based on the user query and current context. **Only route to an action when additional information or an operation is explicitly necessary.** For simple queries or interactions (e.g., greetings, basic chat, or queries clearly answerable from existing knowledge), immediately proceed to finish.
-
+                You are a decision-making component in an AI agent workflow. Choose the next action based on the user query.
+                
                 ## USER QUERY
                 {query}
 
-                ## CURRENT CONTEXT
-                {context_text or "No context available yet."}
-
-                ## ACTION HISTORY
+                ## ACTION HISTORY (MOST RECENT)
                 {history_text or "No previous actions taken."}
 
                 ## AVAILABLE ACTIONS
-                You can choose from these actions only if clearly required:
+                1. **tool** - Use a specialized tool (file reading, note editing, etc.)
+                2. **finish** - Generate final answer with context you already have
+                
+                NOTE: For any request to write, edit, modify notes/plans: choose "tool"
+                For simple greetings or basic questions: choose "finish" immediately
 
-                1. **rag** - Use Retrieval Augmented Generation to fetch relevant context  
-                **When to use:** You need specific information from the user's files, notes, or research to accurately respond.
-
-                2. **tool** - Use a specialized tool from the tool shed  
-                **When to use:** You must perform a particular operation (e.g., file reading, note editing, code execution, data analysis).
-                - Current tools available:
-                    - file_interaction: Read all files in the workspace, edit note files, and create new note files
-
-                3. **finish** - Generate the final answer using the context and knowledge you already possess  
-                **When to use:** You already have sufficient information or the query does not require external resources or operations.
-
-                ## DECISION INSTRUCTIONS
-                1. Consider carefully if external context or specialized operations are genuinely needed.
-                2. For basic interactions (such as greetings or casual conversation), choose **finish** directly without additional actions.
-                3. Clearly articulate your decision-making process step-by-step.
-
-                Return your decision in this YAML format:
-
-                ```yaml
-                thinking: |
-                    <your step-by-step reasoning>
-                action: <action_name>
-                parameters:
-                    <parameter_name>: <parameter_value>
-                ```
+                ## INSTRUCTIONS
+                Respond with ONE WORD ONLY - either "rag", "tool", or "finish".
+                NO explanation. NO reasoning. Just the action name.
             """
             
-            # Use the gemini-2.0-flash-001 model for making decisions
-            # Always use non-streaming for the decision to ensure we get a complete response
-            # We'll handle exposing the thinking separately
+            # Use a fast model for decision-making
             response_text = await self._call_llm(
                 prompt=prompt,
-                model_name="google/gemini-2.0-flash-001",
-                stream=False,  # Decision node always uses non-streaming
+                model_name="google/gemini-2.0-flash-001", 
+                stream=False,  # Decision is always non-streaming
                 temperature=0,
-                max_tokens=1024
+                max_tokens=5  # Just need one word
             )
             
-            # Extract YAML from the response
-            yaml_text = self._extract_yaml_from_text(response_text)
+            # Clean up response and extract just the action
+            response_text = response_text.strip().lower()
             
-            try:
-                logger.info(f"Decision: {yaml.safe_load(yaml_text)}")
-                decision = yaml.safe_load(yaml_text)
-            except yaml.YAMLError as e:
-                logger.error(f"Error parsing YAML from Gemini response: {e}")
-                logger.error(f"Raw YAML content that failed to parse: {yaml_text}")
+            # Extract the action from the response
+            if "rag" in response_text:
+                action = "rag"
+            elif "tool" in response_text:
+                action = "tool"
+            else:
+                action = "finish"  # Default to finish if unclear
                 
-                # Create a fallback decision with the model's raw response as thinking
-                return {
-                    "action": "finish",
-                    "thinking": f"Error parsing model response as YAML. Raw response: {response_text}",
-                    "parameters": {
-                        "reason": f"YAML parsing error: {str(e)}"
-                    }
-                }
+            # Create minimal decision object
+            decision = {
+                "action": action,
+                "thinking": f"Quick decision: {action}",
+                "parameters": {}
+            }
             
-            # Validate decision format
-            if not isinstance(decision, dict):
-                raise ValueError("Decision must be a dictionary")
-            
-            if "action" not in decision:
-                raise ValueError("Decision must include 'action'")
-            
-            if decision["action"] not in ["rag", "tool", "finish"]:
-                raise ValueError(f"Invalid action '{decision['action']}'. Must be one of: rag, tool, finish")
-            
-            if "parameters" not in decision:
-                decision["parameters"] = {}
-            
-            # Make sure the thinking is included
-            if "thinking" not in decision:
-                decision["thinking"] = "No detailed reasoning provided."
-                
-            # Log the decision and thinking
-            logger.info(f"Decision: {decision['action']} with parameters {decision['parameters']}")
-            logger.info(f"Thinking: {decision['thinking'][:100]}...")
-            
-            # If streaming is requested, immediately stream the thinking part to the client
-            if stream:
-                logger.info("Streaming thinking to client")
-                # Note: The thinking content is preserved in the decision object
-                # It will be extracted and sent to the client by the agent flow
+            logger.info(f"Quick decision: {action}")
             
             return decision
             
         except Exception as e:
-            logger.error(f"Error getting decision from Gemini: {e}")
+            logger.error(f"Error getting decision: {e}")
             # Default to finish action if there's an error
             return {
                 "action": "finish",
                 "thinking": f"Error during decision making: {str(e)}",
-                "parameters": {
-                    "error": f"Error during decision making: {str(e)}"
-                }
+                "parameters": {}
             }
-            
+
     def _extract_yaml_from_text(self, text: str) -> str:
         """
         Extracts YAML content from text that might contain additional content.

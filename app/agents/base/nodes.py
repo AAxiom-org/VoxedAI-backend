@@ -7,13 +7,13 @@ import logging
 from pocketflow import Node, AsyncNode
 from app.services.llm_service import llm_service
 from app.core.logging import logger
-from app.toolshed.flow import run_toolshed_flow
+from app.agents.toolshed.flow import run_toolshed_flow
 
 
 class DecisionNode(AsyncNode):
     """
     Decision node that determines the next action in the workflow.
-    Uses google/gemini-2.0-flash-001 to decide between RAG, Tool, or Finish actions.
+    Uses a fast model to quickly decide between RAG, Tool, or Finish actions.
     """
     
     async def prep_async(self, shared):
@@ -21,7 +21,7 @@ class DecisionNode(AsyncNode):
         query = shared.get("query", "")
         context = shared.get("context", {})
         action_history = shared.get("action_history", [])
-        stream = shared.get("stream", False)
+        stream = shared.get("stream", True)  # Default to stream
         
         logger.info(f"DecisionNode: Processing query '{query}' (stream={stream})")
         
@@ -29,14 +29,24 @@ class DecisionNode(AsyncNode):
             "query": query,
             "context": context,
             "action_history": action_history,
-            "stream": stream
+            "stream": stream,
+            "_shared": shared  # Pass full shared context for event queue access
         }
     
     async def exec_async(self, prep_res):
         query = prep_res["query"]
         context = prep_res["context"]
         action_history = prep_res["action_history"]
-        stream = prep_res.get("stream", False)
+        stream = prep_res.get("stream", True)
+        shared = prep_res.get("_shared", {})
+        
+        # If stream is enabled and we have an event queue, send a decision start event
+        if stream and "event_queue" in shared and shared["event_queue"] is not None:
+            event = {
+                "type": "decision_start",
+                "message": "Making decision on next action"
+            }
+            await shared["event_queue"].put(event)
         
         # Use the LLM service to get the decision
         decision = await llm_service.get_decision(
@@ -46,59 +56,41 @@ class DecisionNode(AsyncNode):
             stream=stream
         )
         
-        return decision
-    
-    async def post_async(self, shared, prep_res, decision):
-        # Store the decision in the shared context
-        action_history = shared.get("action_history", [])
-        thinking_history = shared.get("thinking_history", [])
-        
-        # Store the thinking separately for client exposure
-        if "thinking" in decision:
-            thinking = decision.get("thinking", "")
-            thinking_history.append({
-                "step": len(action_history) + 1,
-                "thinking": thinking
-            })
-            shared["thinking_history"] = thinking_history
-            
-            # Also add it to the context for the final response
-            context = shared.get("context", {})
-            if "decision_thinking" not in context:
-                context["decision_thinking"] = []
-            context["decision_thinking"].append({
-                "step": len(action_history) + 1,
-                "thinking": thinking
-            })
-            shared["context"] = context
-            
-            # If we have an event queue, send the thinking step
-            if "event_queue" in shared and shared["event_queue"] is not None:
-                event = {
-                    "type": "thinking",
-                    "step": len(action_history) + 1,
-                    "thinking": thinking
-                }
-                await shared["event_queue"].put(event)
-        
-        action_history.append(decision)
-        shared["action_history"] = action_history
-        shared["last_decision"] = decision
-        
-        # Get the action from the decision
-        action = decision.get("action", "finish")
-        logger.info(f"DecisionNode: Next action '{action}'")
-        
-        # If we have an event queue, send the decision event
-        if "event_queue" in shared and shared["event_queue"] is not None:
+        # Immediately send the decision event if streaming
+        if stream and "event_queue" in shared and shared["event_queue"] is not None:
             event = {
                 "type": "decision",
-                "decision": action
+                "decision": decision["action"]
             }
             await shared["event_queue"].put(event)
         
-        # Return the action as the next node to transition to
-        return action
+        return decision
+    
+    async def post_async(self, shared, prep_res, decision):
+        # Store thinking for later reference, but keep it minimal
+        thinking_history = shared.get("thinking_history", [])
+        thinking_step = len([t for t in thinking_history if isinstance(t, dict) and t.get("step") == "decision"])
+        thinking_history.append({
+            "step": thinking_step + 1,
+            "thinking": decision.get("thinking", "")
+        })
+        shared["thinking_history"] = thinking_history
+        
+        # Store minimal context for the next step
+        if shared.get("context") is None:
+            shared["context"] = {}
+        
+        # Store action history - minimal version
+        action_history = shared.get("action_history", [])
+        action_entry = {
+            "action": decision.get("action", "unknown")
+        }
+        action_history.append(action_entry)
+        shared["action_history"] = action_history
+        
+        logger.info(f"DecisionNode: Next action '{decision.get('action')}'")
+        
+        return decision.get("action")
 
 
 class RAGNode(AsyncNode):
@@ -196,7 +188,7 @@ class ToolShedNode(AsyncNode):
             await shared["event_queue"].put(event)
         
         try:
-            from app.toolshed.flow import run_toolshed_flow
+            from app.agents.toolshed.flow import run_toolshed_flow
             
             # Run the toolshed flow to execute the selected tool
             tool_results = await run_toolshed_flow(
@@ -311,13 +303,14 @@ class ToolShedNode(AsyncNode):
 class FinishNode(AsyncNode):
     """
     Finish node that generates the final response using all gathered context.
+    Optimized for fast streaming responses with exposed reasoning.
     """
     
     async def prep_async(self, shared):
         query = shared.get("query", "")
         context = shared.get("context", {})
         action_history = shared.get("action_history", [])
-        stream = shared.get("stream", False)
+        stream = shared.get("stream", True)  # Default to stream
         model_name = shared.get("model_name", "deepseek/deepseek-chat:free")
         
         logger.info(f"FinishNode: Generating final response (stream={stream})")
@@ -327,34 +320,59 @@ class FinishNode(AsyncNode):
             "context": context,
             "action_history": action_history,
             "stream": stream,
-            "model_name": model_name
+            "model_name": model_name,
+            "_shared": shared  # Pass the shared context for event handling
         }
     
     async def exec_async(self, prep_res):
         query = prep_res["query"]
         context = prep_res.get("context", {})
-        stream = prep_res.get("stream", False)
+        stream = prep_res.get("stream", True)
         model_name = prep_res.get("model_name", "deepseek/deepseek-chat:free")
-        # Format the context for the final response
-        rag_results = context.get("rag_results", {}).get("message", "No RAG results available")
-        tool_results = context.get("tool_results", {}).get("message", "No tool results available")
+        shared = prep_res.get("_shared", {})
         
-        # Also include any thinking/reasoning from decision steps
-        decision_thinking = ""
-        if "decision_thinking" in context:
-            for item in context["decision_thinking"]:
-                decision_thinking += f"Step {item['step']} thinking:\n{item['thinking']}\n\n"
+        # If streaming, notify that we're starting response generation
+        if stream and "event_queue" in shared and shared["event_queue"] is not None:
+            event = {
+                "type": "finish_start",
+                "message": "Starting final response generation"
+            }
+            await shared["event_queue"].put(event)
+            
+        # Optimize context for the final response - keep it minimal
+        # Extract only what's needed from available context
+        rag_results = context.get("rag_results", {}).get("message", "")
+        tool_results = context.get("tool_results", {})
         
-        prompt = f"""
+        # Check if this is a casual greeting or very simple query
+        casual_greetings = ["hi", "hello", "hey", "sup", "yo", "howdy", "hiya", "heya", "greetings", "good morning", "good afternoon", "good evening"]
+        casual_questions = ["how are you", "what's up", "wassup", "how's it going", "how are things", "what's new"]
+        
+        words = query.lower().split()
+        is_casual = (len(words) <= 5 and 
+                    (any(greeting in query.lower() for greeting in casual_greetings) or
+                     any(question in query.lower() for question in casual_questions) or
+                     query.lower().strip() in casual_greetings))
+        
+        if is_casual:
+            prompt = f"""
+        You are a conversational assistant. For casual greetings or simple queries, keep your responses extremely brief.
         # USER QUERY
         {query}
         
-        # CONTEXT INFORMATION
-        RAG Results: {rag_results}
-        Tool Results: {tool_results}
+        # TASK
+        Respond naturally but extremely briefly to this casual greeting. DO NOT explain what the greeting means. Just respond as a human would in a chat.
+        """
+        else:
+            prompt = f"""
+        You are a general purpose chatbot designed to be helpful, informative, and supportive while assisting users with a wide range of tasks, providing accurate information, and responding to queries in a friendly and conversational manner.
+        # USER QUERY
+        {query}
         
-        # DECISION REASONING
-        {decision_thinking or "No decision reasoning available"}
+        # AVAILABLE CONTEXT
+        {rag_results if rag_results else "No additional context available."}
+        
+        {tool_results.get("message", "") if tool_results else ""}
         
         # TASK
         Based on the user's query and the context information, provide a comprehensive and accurate response.
@@ -362,10 +380,10 @@ class FinishNode(AsyncNode):
         acknowledge this and provide the best response possible with the available information.
         """
                 
-        # Generate the final response
+        # Generate the final response - always stream for immediate feedback
         response_text = await llm_service._call_llm(
             prompt=prompt,
-            stream=stream,
+            stream=True,  # Always stream
             temperature=0.3,
             max_tokens=2048,
             model_name=model_name

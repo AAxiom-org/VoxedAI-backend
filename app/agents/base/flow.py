@@ -58,7 +58,7 @@ async def run_agent_flow(
     space_id: str, 
     query: str, 
     active_file_id: Optional[str] = None,
-    stream: bool = False,
+    stream: bool = True,
     model_name: Optional[str] = None,
     top_k: Optional[int] = None,
     user_id: Optional[str] = None
@@ -70,7 +70,7 @@ async def run_agent_flow(
         space_id: ID of the space the query pertains to
         query: The user's question or command
         active_file_id: ID of the file the user is actively working with, or None if no file is active
-        stream: Whether to stream the response
+        stream: Whether to stream the response (default is now True)
         model_name: Optional model name to use for the response
         top_k: Optional number of top results to consider
         user_id: Optional user ID for tracking or personalization
@@ -169,7 +169,6 @@ async def run_agent_flow(
             
             # If the final response is a generator (streaming from the LLM), yield from it
             if hasattr(final_response, '__aiter__'):
-                buffer = ""
                 async for chunk in final_response:
                     # Check if the chunk contains a reasoning tag
                     if "<reasoning>" in chunk and "</reasoning>" in chunk:
@@ -186,18 +185,7 @@ async def run_agent_flow(
                     
                     # Handle the regular token content
                     if chunk:
-                        buffer += chunk
-                        # Split on natural boundaries and yield complete segments
-                        segments = buffer.split(" ")
-                        if len(segments) > 1:
-                            # Yield all segments except the last one (which might be incomplete)
-                            yield " ".join(segments[:-1]) + " "
-                            # Keep the last segment in the buffer
-                            buffer = segments[-1]
-                            
-                # Yield any remaining content in the buffer
-                if buffer:
-                    yield buffer
+                        yield chunk  # Yield chunks directly without buffering for faster response
             else:
                 # Otherwise, yield the entire response
                 yield final_response
@@ -209,6 +197,7 @@ async def run_agent_flow(
         return stream_generator()
     else:
         # For non-streaming, run the flow and return the full response with metadata
+        # Now this is just a fallback as we prefer streaming
         flow = create_agent_flow()
         await flow.run_async(shared)
         

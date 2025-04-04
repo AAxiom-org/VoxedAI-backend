@@ -117,6 +117,16 @@ class ToolShedDecisionNode(AsyncNode):
         - If the user mentions something ambigouos like "my code" or "this file" or "the file" or "the code", 
           you should assume they are referring to the active file. Which is already known by the system.
         
+        NOTE EDITING GUIDANCE:
+        - For queries about writing, continuing, or finishing notes/plans: use file_interaction with action="edit"
+        - For generating new content like "write a research plan": use file_interaction with action="edit" or "append"
+        - The active file's content will be available to you in the next step, so don't worry about not having seen it yet
+        - Sample queries that should use file_interaction:
+          * "finish writing my plan" → action="edit" 
+          * "continue writing" → action="edit"
+          * "generate a research outline" → action="edit"
+          * "write more content" → action="edit"
+        
         Respond in YAML format:
         ```yaml
         thinking: |
