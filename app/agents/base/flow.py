@@ -93,7 +93,11 @@ async def run_agent_flow(
         "user_id": user_id,
         "context": {},
         "action_history": [],
-        "thinking_history": []
+        "thinking_history": [],
+        "tool_retry_count": 0,         # Track the number of consecutive tool retries 
+        "max_tool_retries": 3,         # Maximum number of consecutive retries before forcing finish
+        "total_tool_calls": 0,         # Track total number of tool calls for this query
+        "max_total_tool_calls": 5      # Absolute maximum tool calls to prevent infinite loops
     }
     
     if stream:

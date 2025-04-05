@@ -18,6 +18,17 @@ class ThinkingStep(BaseModel):
     thinking: str = Field(..., description="The reasoning/thinking content")
 
 
+class AgentEvent(BaseModel):
+    """Schema for agent workflow events."""
+    type: str = Field("agent_event", description="The type of event (usually 'agent_event')")
+    event_type: str = Field(..., description="The specific event type (decision, file_edit_start, etc.)")
+    decision: Optional[str] = Field(None, description="Decision made by the agent")
+    file_id: Optional[str] = Field(None, description="ID of a file being edited")
+    tool: Optional[str] = Field(None, description="Tool being used by the agent")
+    message: Optional[str] = Field(None, description="Event message")
+    data: Optional[str] = Field(None, description="Additional event data")
+
+
 class AgentRequest(BaseModel):
     """Schema for agent request."""
     space_id: str = Field(..., description="ID of the space the query pertains to")
@@ -27,6 +38,8 @@ class AgentRequest(BaseModel):
     model_name: Optional[str] = Field(None, description="Optional model name to use for the response")
     top_k: Optional[int] = Field(None, description="Optional number of top results to consider")
     user_id: Optional[str] = Field(None, description="Optional user ID for tracking or personalization")
+    chat_session_id: Optional[str] = Field(None, description="ID of the chat session this request belongs to")
+    save_to_db: bool = Field(True, description="Whether to save the request and response to the database")
 
 
 class AgentResponse(BaseModel):
@@ -34,6 +47,8 @@ class AgentResponse(BaseModel):
     success: bool = Field(..., description="Whether the agent execution was successful")
     response: str = Field(..., description="The response text (answer)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional information about the response")
+    chat_session_id: Optional[str] = Field(None, description="ID of the chat session this response belongs to")
+    workflow: Optional[List[AgentEvent]] = Field(None, description="Workflow events from the agent process")
     
     @property
     def sources(self) -> List[QueryResult]:
@@ -44,6 +59,11 @@ class AgentResponse(BaseModel):
     def thinking(self) -> List[ThinkingStep]:
         """Get the thinking steps for this response."""
         return self.metadata.get("thinking", [])
+    
+    @property
+    def reasoning(self) -> str:
+        """Get the reasoning content."""
+        return self.metadata.get("reasoning", "")
     
     @property
     def query_time_ms(self) -> int:

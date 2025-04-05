@@ -230,6 +230,18 @@ class ToolShedDecisionNode(AsyncNode):
         # Add more debugging about the decision
         logger.info(f"ToolShedDecisionNode post_async - Full decision: {decision}")
         
+        # Send decision thinking as a reasoning event if available
+        if event_queue is not None and decision.get("thinking"):
+            try:
+                # Format the reasoning with a clear header
+                reasoning_content = f"Decision Reasoning: I'm deciding what tool to use for '{prep_res.get('query', '')}'\n\n{decision['thinking']}"
+                await event_queue.put({
+                    "type": "reasoning",
+                    "content": reasoning_content
+                })
+            except Exception as e:
+                logger.error(f"Error sending decision reasoning event: {str(e)}")
+        
         # If no tool is needed, return None (will end the flow)
         if decision.get("action") == "none":
             logger.info("ToolShedDecisionNode: No tool needed, returning None to end the flow")
@@ -264,7 +276,8 @@ class ToolShedDecisionNode(AsyncNode):
                     "type": "tool_selected",
                     "message": f"Selected tool: {action}",
                     "tool": action,
-                    "parameters": parameters
+                    "parameters": parameters,
+                    "thinking": decision.get("thinking", "")  # Include the decision thinking
                 })
             except Exception as e:
                 logger.error(f"Error sending tool_selected event: {str(e)}")

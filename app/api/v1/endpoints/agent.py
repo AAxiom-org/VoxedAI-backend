@@ -3,7 +3,8 @@ API endpoints for agent operations.
 """
 import json
 import time
-from typing import Any, Dict
+import uuid
+from typing import Any, Dict, List
 import traceback
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -11,8 +12,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from app.core.logging import logger
-from app.schemas.agent import AgentRequest, AgentResponse
+from app.schemas.agent import AgentRequest, AgentResponse, AgentEvent
 from app.agents.base.flow import run_agent_flow
+from app.db.supabase import supabase_client
+from app.models.chat_models import ChatSessionCreate, ChatMessageCreate
 
 router = APIRouter()
 
@@ -31,7 +34,7 @@ async def run_agent(
     3. Returns the response
     
     Args:
-        request: Contains space_id, query, active_file_id, stream, model_name, top_k, and user_id parameters
+        request: Contains space_id, query, active_file_id, stream, model_name, top_k, user_id, and chat_session_id parameters
         background_tasks: For handling cleanup tasks
         
     Returns:
@@ -42,9 +45,51 @@ async def run_agent(
         if request.stream is None:
             request.stream = True
             
-        logger.info(f"Executing agent workflow for space_id={request.space_id}, query='{request.query}', stream={request.stream}, active_file_id={request.active_file_id}, model_name={request.model_name}, top_k={request.top_k}, user_id={request.user_id}")
+        logger.info(f"Executing agent workflow for space_id={request.space_id}, query='{request.query}', stream={request.stream}, active_file_id={request.active_file_id}, model_name={request.model_name}, top_k={request.top_k}, user_id={request.user_id}, chat_session_id={request.chat_session_id}")
         
         start_time = time.time()
+        
+        # Create a chat session if one wasn't provided but we need to save to DB
+        chat_session_id = request.chat_session_id
+        if request.save_to_db and not chat_session_id and request.user_id:
+            try:
+                # Create a title from the first few words of the query
+                title = request.query[:30] + ("..." if len(request.query) > 30 else "")
+                
+                # Create session data
+                session_data = ChatSessionCreate(
+                    user_id=request.user_id,
+                    space_id=request.space_id,
+                    title=title
+                )
+                
+                # Create the session
+                session = await supabase_client.create_chat_session(session_data)
+                chat_session_id = session.id
+                logger.info(f"Created new chat session: {chat_session_id}")
+            except Exception as e:
+                logger.error(f"Error creating chat session: {e}")
+                # Continue without chat session if creation fails
+        
+        # Save the user message to the database if requested
+        if request.save_to_db and chat_session_id and request.user_id:
+            try:
+                # Create message data
+                user_message_data = ChatMessageCreate(
+                    chat_session_id=chat_session_id,
+                    space_id=request.space_id,
+                    user_id=request.user_id,
+                    content=request.query,
+                    is_user=True,
+                    workflow=None  # User messages don't have workflow data
+                )
+                
+                # Save the message
+                await supabase_client.save_chat_message(user_message_data)
+                logger.info(f"Saved user message to chat session: {chat_session_id}")
+            except Exception as e:
+                logger.error(f"Error saving user message: {e}")
+                # Continue even if saving the message fails
         
         # If streaming is requested, set up a streaming response with SSE
         if request.stream:
@@ -65,6 +110,10 @@ async def run_agent(
                     sources_sent = False
                     # Buffer for collecting reasoning content
                     reasoning_buffer = ""
+                    # Buffer for collecting agent events
+                    agent_events: List[AgentEvent] = []
+                    # Buffer for collecting response content
+                    response_buffer = ""
                     
                     # Stream the response chunks as SSE events
                     async for chunk in response_generator:
@@ -91,63 +140,58 @@ async def run_agent(
                                 event_type = chunk[7:event_end]
                                 event_data = chunk[event_end+1:chunk.find("[/EVENT]")]
                                 
-                                # Handle different event types
+                                # Create an AgentEvent object
+                                event_obj = AgentEvent(
+                                    type="agent_event",
+                                    event_type=event_type
+                                )
+                                
+                                # Set the appropriate field based on event type
                                 if event_type == "decision":
-                                    event_obj = {
-                                        "type": "agent_event",
-                                        "event_type": "decision",
-                                        "decision": event_data
-                                    }
-                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    event_obj.decision = event_data
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': 'decision', 'decision': event_data})}\n\n"
                                     
                                 elif event_type == "file_edit_start":
-                                    event_obj = {
-                                        "type": "agent_event",
-                                        "event_type": "file_edit_start",
-                                        "file_id": event_data
-                                    }
-                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    event_obj.file_id = event_data
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': 'file_edit_start', 'file_id': event_data})}\n\n"
                                     
                                 elif event_type == "file_edit_complete":
-                                    event_obj = {
-                                        "type": "agent_event", 
-                                        "event_type": "file_edit_complete",
-                                        "file_id": event_data
-                                    }
-                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    event_obj.file_id = event_data
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': 'file_edit_complete', 'file_id': event_data})}\n\n"
                                     
                                 elif event_type == "tool_complete":
-                                    event_obj = {
-                                        "type": "agent_event",
-                                        "event_type": "tool_complete", 
-                                        "tool": event_data
-                                    }
-                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    event_obj.tool = event_data
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': 'tool_complete', 'tool': event_data})}\n\n"
                                     
                                 elif event_type == "rag_complete":
-                                    event_obj = {
-                                        "type": "agent_event",
-                                        "event_type": "rag_complete",
-                                        "message": event_data
-                                    }
-                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                    event_obj.message = event_data
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': 'rag_complete', 'message': event_data})}\n\n"
                                     
-                                # Handle all other event types with a standard format
-                                else:
-                                    # Special handling for error events to maintain compatibility
-                                    if event_type == "error":
-                                        event_obj = {
-                                            "type": "error",
-                                            "message": event_data
-                                        }
+                                elif event_type == "tool_selected":
+                                    if isinstance(event_data, dict) and "tool" in event_data:
+                                        tool_name = event_data["tool"]
                                     else:
-                                        # Pass through all other events with their type and data
-                                        event_obj = {
-                                            "type": "agent_event",
-                                            "event_type": event_type,
-                                            "data": event_data
-                                        }
-                                    yield f"data: {json.dumps(event_obj)}\n\n"
+                                        tool_name = event_data
+                                        
+                                    event_obj.tool = tool_name
+                                    # Include parameters if available
+                                    parameters = event.get("parameters", {})
+                                    
+                                    # Send event to client with tool and parameters
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': 'tool_selected', 'tool': tool_name, 'parameters': parameters})}\n\n"
+                                    
+                                # Handle error events
+                                elif event_type == "error":
+                                    event_obj.message = event_data
+                                    yield f"data: {json.dumps({'type': 'error', 'message': event_data})}\n\n"
+                                    
+                                # Handle all other event types
+                                else:
+                                    event_obj.data = event_data
+                                    yield f"data: {json.dumps({'type': 'agent_event', 'event_type': event_type, 'data': event_data})}\n\n"
+                                
+                                # Store the event for later saving
+                                agent_events.append(event_obj)
                             continue
                             
                         elif "<reasoning>" in chunk:
@@ -169,9 +213,6 @@ async def run_agent(
                                 }
                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                 
-                                # Clear reasoning buffer after sending
-                                reasoning_buffer = ""
-                                
                                 # Remove the reasoning part from the chunk before processing the rest
                                 chunk = chunk[:start_idx - len("<reasoning>")] + chunk[end_idx + len("</reasoning>"):]
                             
@@ -181,6 +222,7 @@ async def run_agent(
                                     "type": "token",
                                     "content": chunk
                                 }
+                                response_buffer += chunk
                                 yield f"data: {json.dumps(token_data)}\n\n"
                             
                         elif "Step " in chunk and "Reasoning:" in chunk:
@@ -189,6 +231,8 @@ async def run_agent(
                                 "type": "reasoning",
                                 "content": chunk
                             }
+                            # Accumulate reasoning in the buffer
+                            reasoning_buffer += chunk + "\n"
                             yield f"data: {json.dumps(reasoning_data)}\n\n"
                             
                         else:
@@ -197,13 +241,36 @@ async def run_agent(
                                 "type": "token",
                                 "content": chunk
                             }
+                            response_buffer += chunk
                             yield f"data: {json.dumps(token_data)}\n\n"
+                    
+                    # Once streaming is complete, save the AI response to the database
+                    if request.save_to_db and chat_session_id and request.user_id:
+                        try:
+                            # Create message data
+                            ai_message_data = ChatMessageCreate(
+                                chat_session_id=chat_session_id,
+                                space_id=request.space_id,
+                                user_id=request.user_id,
+                                content=response_buffer.strip(),
+                                is_user=False,
+                                workflow=agent_events and [event.dict() for event in agent_events],
+                                reasoning={"content": reasoning_buffer.strip()} if reasoning_buffer.strip() else None
+                            )
+                            
+                            # Save the message
+                            await supabase_client.save_chat_message(ai_message_data)
+                            logger.info(f"Saved AI response to chat session: {chat_session_id}")
+                        except Exception as e:
+                            logger.error(f"Error saving AI response: {e}")
+                            # Continue even if saving the message fails
                     
                     # Send a final "done" event
                     query_time_ms = int((time.time() - start_time) * 1000)
                     done_data = {
                         "type": "done",
-                        "query_time_ms": query_time_ms
+                        "query_time_ms": query_time_ms,
+                        "chat_session_id": chat_session_id
                     }
                     yield f"data: {json.dumps(done_data)}\n\n"
                     
@@ -247,10 +314,32 @@ async def run_agent(
                 reasoning = response_text[start_idx:end_idx].strip()
                 response_text = response_text[:start_idx - len("<reasoning>")] + response_text[end_idx + len("</reasoning>"):]
         
+        # If we're saving to the database and have a chat session ID
+        if request.save_to_db and chat_session_id and request.user_id:
+            try:
+                # Create AI message data
+                ai_message_data = ChatMessageCreate(
+                    chat_session_id=chat_session_id,
+                    space_id=request.space_id,
+                    user_id=request.user_id,
+                    content=response_text.strip(),
+                    is_user=False,
+                    workflow=None,  # No workflow data for non-streaming responses
+                    reasoning={"content": reasoning} if reasoning else None
+                )
+                
+                # Save the AI message
+                await supabase_client.save_chat_message(ai_message_data)
+                logger.info(f"Saved AI response to chat session: {chat_session_id}")
+            except Exception as e:
+                logger.error(f"Error saving AI response: {e}")
+                # Continue even if saving the message fails
+        
         # The response_data is now a dict with 'response' and 'thinking' keys
         return AgentResponse(
             success=True,
             response=response_text.strip(),
+            chat_session_id=chat_session_id,
             metadata={
                 "flow_type": "pocketflow_agent",
                 "thinking": response_data.get("thinking", []),

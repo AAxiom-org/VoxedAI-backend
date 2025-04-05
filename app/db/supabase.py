@@ -9,6 +9,9 @@ from supabase import Client, create_client
 from app.core.config import settings
 from app.core.logging import logger
 
+# Add import for our new chat models
+from app.models.chat_models import ChatSession, ChatSessionCreate, ChatMessage, ChatMessageCreate
+
 
 class SupabaseClient:
     """
@@ -378,6 +381,124 @@ class SupabaseClient:
             return {"success": True, "path": file_path}
         except Exception as e:
             logger.error(f"Error deleting file from storage: {e}")
+            raise
+
+    # Chat-related methods
+    
+    async def create_chat_session(self, session_data: ChatSessionCreate) -> ChatSession:
+        """
+        Creates a new chat session.
+        
+        Args:
+            session_data: The session data to create
+            
+        Returns:
+            ChatSession: The created chat session
+        """
+        try:
+            # Convert to dict for insertion
+            session_dict = session_data.dict()
+            
+            # Insert into chat_sessions table
+            response = self.client.table("chat_sessions").insert(session_dict).execute()
+            
+            if not response.data:
+                raise ValueError("Failed to create chat session - no data returned")
+                
+            logger.info(f"Created chat session with ID: {response.data[0]['id']}")
+            return ChatSession(**response.data[0])
+        except Exception as e:
+            logger.error(f"Error creating chat session: {e}")
+            raise
+
+    async def get_chat_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches a chat session by ID.
+        
+        Args:
+            session_id: The ID of the session to fetch
+            
+        Returns:
+            Optional[Dict[str, Any]]: The chat session data or None if not found
+        """
+        try:
+            response = self.client.table("chat_sessions").select("*").eq("id", session_id).execute()
+            
+            if not response.data:
+                logger.warning(f"Chat session not found: {session_id}")
+                return None
+                
+            return response.data[0]
+        except Exception as e:
+            logger.error(f"Error fetching chat session: {e}")
+            raise
+
+    async def get_chat_sessions_for_user(self, user_id: str, space_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetches all chat sessions for a user, optionally filtered by space.
+        
+        Args:
+            user_id: The ID of the user
+            space_id: Optional space ID to filter by
+            
+        Returns:
+            List[Dict[str, Any]]: The list of chat sessions
+        """
+        try:
+            query = self.client.table("chat_sessions").select("*").eq("user_id", user_id)
+            
+            if space_id:
+                query = query.eq("space_id", space_id)
+                
+            response = query.order("created_at", {"ascending": False}).execute()
+            
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching chat sessions for user: {e}")
+            raise
+
+    async def save_chat_message(self, message_data: ChatMessageCreate) -> ChatMessage:
+        """
+        Saves a new chat message.
+        
+        Args:
+            message_data: The message data to save
+            
+        Returns:
+            ChatMessage: The saved chat message
+        """
+        try:
+            # Convert to dict for insertion
+            message_dict = message_data.dict()
+            
+            # Insert into chat_messages table
+            response = self.client.table("chat_messages").insert(message_dict).execute()
+            
+            if not response.data:
+                raise ValueError("Failed to save chat message - no data returned")
+                
+            logger.info(f"Saved chat message with ID: {response.data[0]['id']}")
+            return ChatMessage(**response.data[0])
+        except Exception as e:
+            logger.error(f"Error saving chat message: {e}")
+            raise
+
+    async def get_chat_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Fetches all messages for a chat session.
+        
+        Args:
+            session_id: The ID of the chat session
+            
+        Returns:
+            List[Dict[str, Any]]: The list of chat messages
+        """
+        try:
+            response = self.client.table("chat_messages").select("*").eq("chat_session_id", session_id).order("created_at", {"ascending": True}).execute()
+            
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching chat messages: {e}")
             raise
 
 

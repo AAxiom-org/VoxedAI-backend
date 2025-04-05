@@ -709,36 +709,227 @@ class FileInteraction(AsyncNode):
                     new_content = json.loads(modified_content)
                     note_data.extend(new_content)
                     updated_content = json.dumps(note_data)
-                except json.JSONDecodeError:
-                    # Send event that file edit is complete (even though it failed)
-                    if shared and "event_queue" in shared and shared["event_queue"] is not None:
-                        event = {
-                            "type": "file_edit_complete",
-                            "file_id": file_info.id
-                        }
-                        await shared["event_queue"].put(event)
+                except json.JSONDecodeError as json_error:
+                    # Try to recover from JSON decode error by retrying with more specific instructions
+                    logger.warning(f"JSON decode error in appended content: {str(json_error)}")
                     
-                    return {
-                        "success": False,
-                        "error": "Invalid JSON format in appended content"
-                    }
-            
+                    # Send event about retrying
+                    if shared and "event_queue" in shared and shared["event_queue"] is not None:
+                        try:
+                            await shared["event_queue"].put({
+                                "type": "file_edit_retry",
+                                "message": "Retrying edit with corrected format instructions",
+                                "file_id": file_info.id,
+                                "error": str(json_error)
+                            })
+                        except Exception as e:
+                            logger.error(f"Error sending file_edit_retry event: {str(e)}")
+                    
+                    # Create a retry prompt that includes the error and the original response
+                    retry_prompt = f"""
+                    # USER QUERY
+                    {query}
+                    
+                    # NOTE CONTENT (WITH LINE NUMBERS)
+                    {processed_content}
+                    
+                    # FORMATTING ERROR
+                    Your previous response contained a JSON formatting error:
+                    {str(json_error)}
+                    
+                    # YOUR PREVIOUS RESPONSE
+                    {llm_response}
+                    
+                    # TASK
+                    Correct your previous response to fix the JSON formatting error. Make sure your output 
+                    conforms exactly to the required format for a note file. Each block must be valid JSON.
+                    
+                    The format error is typically related to improperly formatted JSON in the 'modified_content' field.
+                    Make sure that all quotes, braces, and brackets are properly balanced and escaped.
+                    
+                    For 'append' action, the modified_content must be a valid JSON array of note blocks that can be parsed.
+                    
+                    Respond in the same YAML format, but with corrected JSON content:
+                    ```yaml
+                    thinking: |
+                        <your reasoning about the error and how you're fixing it>
+                    action: <one of: append, replace_snippet, needs_more_context>
+                    parameters:
+                        modified_content: |
+                            <if append: the new content to add at the end in valid JSON format>
+                            <if replace_snippet: use the format below with valid JSON content>
+                        reason: <explanation of changes made>
+                    ```
+                    """
+                    
+                    # Call LLM with the retry prompt
+                    retry_response = await llm_service._call_llm(
+                        prompt=retry_prompt,
+                        model_name="deepseek/deepseek-chat-v3-0324",
+                        stream=False,
+                        temperature=0.1
+                    )
+                    
+                    # Try to parse the retry response
+                    try:
+                        retry_yaml_content = self._extract_yaml_from_text(retry_response)
+                        retry_response_obj = yaml.safe_load(retry_yaml_content)
+                        
+                        # Get the corrected content
+                        retry_action = retry_response_obj.get("action")
+                        retry_modified_content = retry_response_obj.get("parameters", {}).get("modified_content", "")
+                        retry_reason = retry_response_obj.get("parameters", {}).get("reason", "No explanation provided")
+                        
+                        # Try to parse and apply the corrected content
+                        retry_new_content = json.loads(retry_modified_content)
+                        note_data.extend(retry_new_content)
+                        updated_content = json.dumps(note_data)
+                        
+                        # Update the action and reason with the retry values
+                        llm_action = retry_action
+                        reason = retry_reason
+                        
+                        # Log successful retry
+                        logger.info("Successfully recovered from JSON formatting error with retry")
+                        
+                    except (yaml.YAMLError, json.JSONDecodeError) as retry_error:
+                        # If the retry also fails, return the original error
+                        logger.error(f"Retry also failed: {str(retry_error)}")
+                        
+                        # Send event that file edit is complete (even though it failed)
+                        if shared and "event_queue" in shared and shared["event_queue"] is not None:
+                            event = {
+                                "type": "file_edit_complete",
+                                "file_id": file_info.id
+                            }
+                            await shared["event_queue"].put(event)
+                        
+                        return {
+                            "success": False,
+                            "error": f"Invalid JSON format in appended content: {str(json_error)}"
+                        }
+                    
             elif llm_action == "replace_snippet":
                 # Parse the snippet replacement format
                 updated_content = self._apply_snippet_replacement(file_content, modified_content)
                 if not updated_content:
-                    # Send event that file edit is complete (even though it failed)
-                    if shared and "event_queue" in shared and shared["event_queue"] is not None:
-                        event = {
-                            "type": "file_edit_complete",
-                            "file_id": file_info.id
-                        }
-                        await shared["event_queue"].put(event)
+                    # Try to recover from snippet replacement error by retrying
+                    logger.warning("Failed to apply snippet replacement, attempting retry")
                     
-                    return {
-                        "success": False,
-                        "error": "Failed to apply snippet replacement"
-                    }
+                    # Send event about retrying
+                    if shared and "event_queue" in shared and shared["event_queue"] is not None:
+                        try:
+                            await shared["event_queue"].put({
+                                "type": "file_edit_retry",
+                                "message": "Retrying snippet replacement with corrected format instructions",
+                                "file_id": file_info.id
+                            })
+                        except Exception as e:
+                            logger.error(f"Error sending file_edit_retry event: {str(e)}")
+                    
+                    # Create a retry prompt for snippet replacement
+                    retry_prompt = f"""
+                    # USER QUERY
+                    {query}
+                    
+                    # NOTE CONTENT (WITH LINE NUMBERS)
+                    {processed_content}
+                    
+                    # FORMATTING ERROR
+                    Your previous response contained an error in the snippet replacement format.
+                    
+                    # YOUR PREVIOUS RESPONSE
+                    {llm_response}
+                    
+                    # TASK
+                    Correct your previous response to fix the formatting error in the snippet replacement.
+                    Make sure you follow the exact format required:
+                    
+                    <<<<<<< ORIGINAL // Line X
+                    (original content to replace - must be valid JSON)
+                    =======
+                    (new content - must be valid JSON)
+                    >>>>>>> UPDATED // Line Y
+                    
+                    1. Make sure the line numbers X and Y are accurate based on the provided content.
+                    2. Ensure both original and replacement content are valid JSON.
+                    3. Include complete JSON objects, not partial ones.
+                    
+                    Respond in the same YAML format, but with corrected snippet replacement:
+                    ```yaml
+                    thinking: |
+                        <your reasoning about the error and how you're fixing it>
+                    action: replace_snippet
+                    parameters:
+                        modified_content: |
+                            <<<<<<< ORIGINAL // Line X
+                            (correct original content)
+                            =======
+                            (correct new content)
+                            >>>>>>> UPDATED // Line Y
+                        reason: <explanation of changes made>
+                    ```
+                    """
+                    
+                    # Call LLM with the retry prompt
+                    retry_response = await llm_service._call_llm(
+                        prompt=retry_prompt,
+                        model_name="deepseek/deepseek-chat-v3-0324",
+                        stream=False,
+                        temperature=0.1
+                    )
+                    
+                    # Try to parse the retry response
+                    try:
+                        retry_yaml_content = self._extract_yaml_from_text(retry_response)
+                        retry_response_obj = yaml.safe_load(retry_yaml_content)
+                        
+                        # Get the corrected content
+                        retry_action = retry_response_obj.get("action")
+                        retry_modified_content = retry_response_obj.get("parameters", {}).get("modified_content", "")
+                        retry_reason = retry_response_obj.get("parameters", {}).get("reason", "No explanation provided")
+                        
+                        # Try to apply the corrected snippet replacement
+                        updated_content = self._apply_snippet_replacement(file_content, retry_modified_content)
+                        if updated_content:
+                            # Update the reason with the retry value
+                            reason = retry_reason
+                            
+                            # Log successful retry
+                            logger.info("Successfully recovered from snippet replacement error with retry")
+                        else:
+                            # If the retry fails to apply the replacement, return an error
+                            logger.error("Retry failed to apply snippet replacement")
+                            
+                            # Send event that file edit is complete (even though it failed)
+                            if shared and "event_queue" in shared and shared["event_queue"] is not None:
+                                event = {
+                                    "type": "file_edit_complete",
+                                    "file_id": file_info.id
+                                }
+                                await shared["event_queue"].put(event)
+                            
+                            return {
+                                "success": False,
+                                "error": "Failed to apply snippet replacement after retry"
+                            }
+                            
+                    except yaml.YAMLError as retry_error:
+                        # If the retry also fails, return the original error
+                        logger.error(f"Retry also failed: {str(retry_error)}")
+                        
+                        # Send event that file edit is complete (even though it failed)
+                        if shared and "event_queue" in shared and shared["event_queue"] is not None:
+                            event = {
+                                "type": "file_edit_complete",
+                                "file_id": file_info.id
+                            }
+                            await shared["event_queue"].put(event)
+                        
+                        return {
+                            "success": False,
+                            "error": "Failed to apply snippet replacement"
+                        }
                 
                 # Verify the updated content is valid JSON
                 try:

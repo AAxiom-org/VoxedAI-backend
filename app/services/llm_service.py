@@ -170,6 +170,7 @@ class LLMService:
                 "stream": stream,
                 "include_reasoning": include_reasoning
             }
+            logger.info(f"DEBUG - Payload: {payload}")
             
             # URL for OpenRouter API
             url = f"{self.base_url}/chat/completions"
@@ -255,7 +256,16 @@ class LLMService:
                 
                 content = data["choices"][0]["message"]["content"]
                 
+                # Check for reasoning field in non-streaming response
+                if include_reasoning and "reasoning" in data["choices"][0]["message"]:
+                    reasoning = data["choices"][0]["message"]["reasoning"]
+                    if reasoning:
+                        logger.info(f"DEBUG - Non-streaming reasoning detected: {reasoning}")
+                        # Add reasoning with special tags that will be extracted later
+                        content = f"<reasoning>{reasoning}</reasoning>{content}"
+                
                 logger.info(f"DEBUG - Non-streaming response received")
+                logger.info(f"DEBUG - LLM Response (non-streaming): {content}")
                 return content
                 
         except Exception as e:
@@ -302,7 +312,8 @@ class LLMService:
         query: str, 
         context: Dict[str, Any] = None, 
         action_history: List[Dict[str, Any]] = None,
-        stream: bool = False
+        stream: bool = False,
+        active_file_id: str = None
     ) -> Dict[str, Any]:
         """
         Uses a language model to decide the next action in the agent workflow.
@@ -318,12 +329,62 @@ class LLMService:
             Dict[str, Any]: A decision object containing action and parameters
         """
         try:
+            # Check if we have a successful file edit in the recent history
+            file_edit_success = False
+            for action in action_history[-5:] if action_history else []:
+                if (action.get('action') == "tool" and 
+                    action.get('tool_name') == "file_interaction" and
+                    action.get('success', False) and 
+                    "success" in action.get('message', '').lower()):
+                    file_edit_success = True
+                    break
+            
             # Format previous actions for the prompt
             history_text = ""
+            
             if action_history:
                 for i, action in enumerate(action_history[-3:]):  # Only use last 3 actions for brevity
-                    history_text += f"Action {i+1}: {action.get('action', 'unknown')}\n"
+                    action_type = action.get('action', 'unknown')
+                    if action_type == "tool":
+                        # Include more details about the tool action
+                        tool_name = action.get('tool_name', 'unknown tool')
+                        result_type = action.get('result_type', 'unknown result')
+                        success = action.get('success', False)
+                        success_str = "✅ SUCCESS" if success else "❌ FAILED"
+                        message = action.get('message', '')
+                        
+                        # Extract any detailed information about changes if available
+                        detailed_info = ""
+                        result = action.get('result', {})
+                        if isinstance(result, dict) and "changes" in result:
+                            detailed_info = f" - Changes: {result['changes']}"
+                        
+                        # Include brief parameter info if available
+                        params_info = ""
+                        if 'parameters' in action and action['parameters']:
+                            params = action['parameters']
+                            if 'action' in params:
+                                params_info = f" ({params.get('action', '')})"
+                            elif 'content' in params:
+                                # For file edits, show content summary
+                                content = params.get('content', '')
+                                if len(content) > 30:
+                                    content = content[:27] + "..."
+                                params_info = f" (content: '{content}')"
+                        
+                        history_text += f"Action {i+1}: {action_type} - Used {tool_name}{params_info}, Result: {result_type} [{success_str}] - {message}{detailed_info}\n"
+                    else:
+                        history_text += f"Action {i+1}: {action_type}\n"
+            
             # TODO: Add rag back when implemented
+            no_file_tool = """1. **tool** - Use a specialized tool: The only tool available is for file reading. THERE IS NO NOTE/FILE EDITING! Do not
+                choose tool unless you need to read a file to respond to the users query."""
+            active_file_tool = """1. **tool** - Use a specialized tool: The only tools available are for file reading, and note editing. There is
+            an active note open, so you can use the tool to read it or edit it. Since there is an active note open you should choose tool if you need to read or write to it."""
+            
+            # Task state indicator for file edit success
+            task_state = "✅ FILE EDIT ALREADY COMPLETED SUCCESSFULLY" if file_edit_success else ""
+            
             prompt = f"""
                 You are a decision-making component in an AI agent workflow. Choose the next action based on the user query.
                 
@@ -332,16 +393,25 @@ class LLMService:
 
                 ## ACTION HISTORY (MOST RECENT)
                 {history_text or "No previous actions taken."}
+                
+                ## TASK STATE
+                {task_state}
 
                 ## AVAILABLE ACTIONS
-                1. **tool** - Use a specialized tool (file reading, note editing, etc.)
+                {active_file_tool if active_file_id else no_file_tool}
                 2. **finish** - Generate final answer with context you already have
                 
-                NOTE: For any request to write, edit, modify notes/plans: choose "tool"
-                For simple greetings or basic questions: choose "finish" immediately
+                ## DECISION GUIDELINES
+                - CRITICAL: If a file edit has ALREADY been completed successfully, you MUST choose "finish"
+                - For simple greetings or basic questions: choose "finish" immediately
+                - For general questions about anything (story telling, quick facts, non-contextual question answering): choose "finish" immediately
+                - If it is something ambiguous, or you are unsure of like "write a story about a cat": choose "finish"
+                - If a previous tool action failed (shows as "FAILED"), choose "tool" again to retry
+                - If a file edit has been completed successfully (shows "SUCCESS"), choose "finish" unless the user explicitly requests additional different edits
+                {"- IMPORTANT OVERRIDE: Choose 'finish' as this task has already been completed successfully" if file_edit_success else ""}
 
                 ## INSTRUCTIONS
-                Respond with ONE WORD ONLY - either "rag", "tool", or "finish".
+                Respond with ONE WORD ONLY - either "tool", or "finish".
                 NO explanation. NO reasoning. Just the action name.
             """
             
@@ -357,8 +427,12 @@ class LLMService:
             # Clean up response and extract just the action
             response_text = response_text.strip().lower()
             
+            # Force "finish" if a file edit was successful
+            if file_edit_success and "finish" not in response_text:
+                logger.info("Override: Forcing 'finish' action because file edit was successful")
+                action = "finish"
             # Extract the action from the response
-            if "rag" in response_text:
+            elif "rag" in response_text:
                 action = "rag"
             elif "tool" in response_text:
                 action = "tool"
@@ -368,7 +442,7 @@ class LLMService:
             # Create minimal decision object
             decision = {
                 "action": action,
-                "thinking": f"Quick decision: {action}",
+                "thinking": f"Quick decision: {action}" + (f" (forced finish due to successful file edit)" if file_edit_success and "tool" in response_text else ""),
                 "parameters": {}
             }
             

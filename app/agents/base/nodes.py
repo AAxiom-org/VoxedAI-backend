@@ -22,6 +22,7 @@ class DecisionNode(AsyncNode):
         context = shared.get("context", {})
         action_history = shared.get("action_history", [])
         stream = shared.get("stream", True)  # Default to stream
+        active_file_id = shared.get("active_file_id")
         
         logger.info(f"DecisionNode: Processing query '{query}' (stream={stream})")
         
@@ -30,6 +31,7 @@ class DecisionNode(AsyncNode):
             "context": context,
             "action_history": action_history,
             "stream": stream,
+            "active_file_id": active_file_id,
             "_shared": shared  # Pass full shared context for event queue access
         }
     
@@ -38,6 +40,7 @@ class DecisionNode(AsyncNode):
         context = prep_res["context"]
         action_history = prep_res["action_history"]
         stream = prep_res.get("stream", True)
+        active_file_id = prep_res.get("active_file_id")
         shared = prep_res.get("_shared", {})
         
         # If stream is enabled and we have an event queue, send a decision start event
@@ -53,7 +56,8 @@ class DecisionNode(AsyncNode):
             query=query,
             context=context,
             action_history=action_history,
-            stream=stream
+            stream=stream,
+            active_file_id=active_file_id
         )
         
         # Immediately send the decision event if streaming
@@ -87,6 +91,18 @@ class DecisionNode(AsyncNode):
         }
         action_history.append(action_entry)
         shared["action_history"] = action_history
+        
+        # Send decision thinking as a reasoning event if available
+        if "event_queue" in shared and shared["event_queue"] is not None and decision.get("thinking"):
+            try:
+                # Format the reasoning with a clear header
+                reasoning_content = f"Initial Decision: I'm deciding on the next step for '{prep_res.get('query', '')}'\n\n{decision['thinking']}"
+                await shared["event_queue"].put({
+                    "type": "reasoning",
+                    "content": reasoning_content
+                })
+            except Exception as e:
+                logger.error(f"Error sending decision reasoning event: {str(e)}")
         
         logger.info(f"DecisionNode: Next action '{decision.get('action')}'")
         
@@ -252,18 +268,128 @@ class ToolShedNode(AsyncNode):
         """Process tool results and decide next step."""
         # Add tool results to context
         context = shared.get("context", {})
+        
+        # Enhanced formatting of tool_results for better context sharing
+        if isinstance(tool_results, dict):
+            # Ensure we capture all relevant information for later nodes
+            # Result info comes from 'result' key typically
+            result = tool_results.get("result", {})
+            
+            # Add enhanced information to tool_results if available
+            if isinstance(result, dict):
+                # If a file edit was successful, let's emphasize that in the message
+                if (tool_results.get("tool_used", tool_results.get("tool_name")) == "file_interaction" and
+                    result.get("success", False) and "changes" in result):
+                    
+                    # Make sure the message field exists and has clear indication of success
+                    if "message" not in tool_results or not tool_results["message"]:
+                        tool_results["message"] = f"File edit successful. {result.get('message', '')}"
+                    
+                    # Add a specific success_summary that other nodes can easily check
+                    tool_results["success_summary"] = (
+                        f"✅ File edit completed successfully:\n{result.get('changes', 'Changes applied to file.')}"
+                    )
+        
+        # Store the enhanced tool_results in context
         context["tool_results"] = tool_results
         shared["context"] = context
         
-        # Add tool action to action history
-        action_history = shared.get("action_history", [])
-        action_history.append({
+        # Increment the total tool calls counter
+        shared["total_tool_calls"] = shared.get("total_tool_calls", 0) + 1
+        
+        # Extract the correct tool name from the results
+        tool_name = tool_results.get("tool_used", tool_results.get("tool_name", "unknown"))
+        
+        # Map result_type to a more standardized format
+        result_type = tool_results.get("result_type", "unknown")
+        
+        # Extract parameters properly - avoid recursive data
+        parameters = {}
+        if "parameters" in tool_results:
+            parameters = {k: v for k, v in tool_results["parameters"].items() if k != "_shared"}
+        
+        action_entry = {
             "action": "tool",
-            "tool_name": tool_results.get("tool_name", "unknown"),
-            "result_type": tool_results.get("result_type", "unknown"),
-            "parameters": tool_results.get("parameters", {})
-        })
+            "tool_name": tool_name,
+            "result_type": result_type,
+            "parameters": parameters
+        }
+        
+        # Check for success or failure based on result
+        result = tool_results.get("result", {})
+        if isinstance(result, dict) and "success" in result:
+            # Some tools explicitly return success status
+            action_entry["success"] = result["success"]
+            if not result["success"]:
+                action_entry["message"] = result.get("error", "Unknown error")
+            else:
+                action_entry["message"] = result.get("message", "Tool executed successfully")
+                # Include the complete result for more context
+                action_entry["result"] = result
+        elif "error" in tool_results:
+            # Tool returned an error
+            action_entry["success"] = False
+            action_entry["message"] = tool_results.get("error", "Unknown error")
+        elif result_type == "error":
+            # Result type indicates error
+            action_entry["success"] = False
+            action_entry["message"] = "Tool execution error"
+        else:
+            # All other cases count as success
+            action_entry["success"] = True
+            action_entry["message"] = tool_results.get("message", "Tool executed")
+            # Include the complete result for more context if available
+            if isinstance(result, dict):
+                action_entry["result"] = result
+            
+        action_history = shared.get("action_history", [])
+        action_history.append(action_entry)
         shared["action_history"] = action_history
+        
+        # Update retry counter based on success or failure
+        if action_entry["success"]:
+            # Reset retry counter on success
+            shared["tool_retry_count"] = 0
+        else:
+            # Increment retry counter on failure
+            shared["tool_retry_count"] = shared.get("tool_retry_count", 0) + 1
+            logger.info(f"Tool failed, retry count now at {shared['tool_retry_count']}")
+        
+        # Check if we've hit any retry limits
+        if shared.get("tool_retry_count", 0) >= shared.get("max_tool_retries", 3):
+            # Force finish after too many consecutive retries
+            logger.warning(f"Tool retry limit reached ({shared['tool_retry_count']}). Forcing finish.")
+            
+            # Add an event to the queue if streaming is enabled
+            if shared.get("stream", False) and "event_queue" in shared:
+                try:
+                    event = {
+                        "type": "forced_finish",
+                        "message": "Automatically finishing due to too many consecutive tool failures"
+                    }
+                    await shared["event_queue"].put(event)
+                except Exception as e:
+                    logger.error(f"Error sending forced_finish event: {str(e)}")
+            
+            return "finish"
+            
+        # Check if we've hit total tool calls limit
+        if shared.get("total_tool_calls", 0) >= shared.get("max_total_tool_calls", 5):
+            # Force finish after too many total tool calls
+            logger.warning(f"Total tool calls limit reached ({shared['total_tool_calls']}). Forcing finish.")
+            
+            # Add an event to the queue if streaming is enabled
+            if shared.get("stream", False) and "event_queue" in shared:
+                try:
+                    event = {
+                        "type": "forced_finish",
+                        "message": "Automatically finishing due to maximum tool call limit reached"
+                    }
+                    await shared["event_queue"].put(event)
+                except Exception as e:
+                    logger.error(f"Error sending forced_finish event: {str(e)}")
+            
+            return "finish"
         
         # Add an event to the queue if streaming is enabled and the queue exists
         if shared.get("stream", False) and "event_queue" in shared:
@@ -327,6 +453,7 @@ class FinishNode(AsyncNode):
     async def exec_async(self, prep_res):
         query = prep_res["query"]
         context = prep_res.get("context", {})
+        action_history = prep_res.get("action_history", [])
         stream = prep_res.get("stream", True)
         model_name = prep_res.get("model_name", "deepseek/deepseek-chat:free")
         shared = prep_res.get("_shared", {})
@@ -338,6 +465,16 @@ class FinishNode(AsyncNode):
                 "message": "Starting final response generation"
             }
             await shared["event_queue"].put(event)
+            
+        # Check if we were forced to finish due to retry limits
+        was_forced = False
+        forced_message = ""
+        if shared.get("tool_retry_count", 0) >= shared.get("max_tool_retries", 3):
+            was_forced = True
+            forced_message = f"The system encountered {shared.get('tool_retry_count')} consecutive tool failures and could not complete your request. "
+        elif shared.get("total_tool_calls", 0) >= shared.get("max_total_tool_calls", 5):
+            was_forced = True
+            forced_message = f"The system reached the maximum number of tool calls ({shared.get('total_tool_calls')}) and could not complete all operations. "
             
         # Optimize context for the final response - keep it minimal
         # Extract only what's needed from available context
@@ -364,6 +501,69 @@ class FinishNode(AsyncNode):
         Respond naturally but extremely briefly to this casual greeting. DO NOT explain what the greeting means. Just respond as a human would in a chat.
         """
         else:
+            # Extract detailed information from tool_results for final response
+            tool_context = ""
+            if tool_results:
+                # Include tool name and type
+                tool_name = tool_results.get("tool_used", tool_results.get("tool_name", "unknown"))
+                result_type = tool_results.get("result_type", "unknown")
+                
+                # Extract any success information
+                success_info = ""
+                result = tool_results.get("result", {})
+                if isinstance(result, dict):
+                    if result.get("success") is True:
+                        success_info = f"✅ SUCCESS: {result.get('message', 'Operation completed successfully')}"
+                        
+                        # Add details about the changes if it was a file edit
+                        if "changes" in result:
+                            success_info += f"\n\nChanges made: {result['changes']}"
+                    elif result.get("success") is False:
+                        success_info = f"❌ FAILED: {result.get('error', 'Operation failed')}"
+                
+                # Include file information if present
+                file_info = ""
+                if "file_id" in tool_results:
+                    file_info = f"File ID: {tool_results['file_id']}"
+                
+                # Include any message
+                message = tool_results.get("message", "")
+                
+                # Check for success_summary field added by ToolShedNode
+                success_summary = tool_results.get("success_summary", "")
+                
+                # Compile all information
+                tool_context = f"""
+        ## TOOL EXECUTION RESULTS
+        Tool: {tool_name}
+        Type: {result_type}
+        {file_info}
+        {success_info}
+        {success_summary}
+        {message}
+        """
+            
+            # Format action history for context
+            action_context = ""
+            if action_history:
+                action_context = "## ACTIONS PERFORMED\n"
+                for i, action in enumerate(action_history[-3:]):  # Only include last 3 actions for brevity
+                    action_type = action.get('action', 'unknown')
+                    if action_type == "tool":
+                        tool_name = action.get('tool_name', 'unknown tool')
+                        success = action.get('success', False)
+                        success_str = "✅ SUCCESS" if success else "❌ FAILED"
+                        message = action.get('message', '')
+                        
+                        action_context += f"{i+1}. Used {tool_name}: [{success_str}] - {message}\n"
+                        
+                        # Add extra details for successful file edits
+                        if (success and tool_name == "file_interaction" and 
+                            "result" in action and isinstance(action["result"], dict)):
+                            result = action["result"]
+                            if "changes" in result:
+                                action_context += f"   Changes: {result['changes']}\n"
+            
             prompt = f"""
         You are a general purpose chatbot designed to be helpful, informative, and supportive while assisting users with a wide range of tasks, providing accurate information, and responding to queries in a friendly and conversational manner.
         # USER QUERY
@@ -372,12 +572,21 @@ class FinishNode(AsyncNode):
         # AVAILABLE CONTEXT
         {rag_results if rag_results else "No additional context available."}
         
-        {tool_results.get("message", "") if tool_results else ""}
+        {action_context}
+        {tool_context}
         
         # TASK
         Based on the user's query and the context information, provide a comprehensive and accurate response.
         Be direct, concise, and helpful. If you cannot provide a complete answer due to missing information,
         acknowledge this and provide the best response possible with the available information.
+        
+        {"IMPORTANT NOTE: " + forced_message if was_forced else ""}
+        
+        # INSTRUCTIONS
+        - If you see that a tool operation was successful, acknowledge it and provide a relevant response.
+        - If the user requested a file edit that was successful, confirm this in your response.
+        - If the user's query was something ambiguous and could have used a tool, or if it was a question that could be answered by the context, ask
+          them if they would like to use a tool. The current tools available are for file reading, and note editing.
         """
                 
         # Generate the final response - always stream for immediate feedback
