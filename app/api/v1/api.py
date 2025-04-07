@@ -3,7 +3,7 @@ API router for v1 endpoints.
 """
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import files, agent, code, graph
+from app.api.v1.endpoints import files, agent, code, graph, research
 
 api_router = APIRouter()
 
@@ -18,4 +18,7 @@ api_router.include_router(
 )
 api_router.include_router(
     graph.router, prefix="/graph", tags=["graph"]
+)
+api_router.include_router(
+    research.router, prefix="/research", tags=["research", "digest"]
 ) 
