@@ -8,7 +8,7 @@ A high-performance, modular Python FastAPI backend that efficiently handles LLM 
 
 ## Core Stack
 
-> **"Backend: Python 3.11+, FastAPI; Database: Pinecone (vector DB), Supabase; Dependencies: pydantic for validation, httpx for async HTTP requests, asyncio for concurrent operations, uvicorn for ASGI server."**
+> **"Backend: Python 3.11+, FastAPI; Database: Pinecone (vector DB), Supabase; Dependencies: pydantic for validation, httpx for async HTTP requests, asyncio for concurrent operations, uvicorn for ASGI server"**
 
 ## File Processors
 
