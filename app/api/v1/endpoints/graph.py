@@ -339,7 +339,7 @@ async def generate_graph_structure_from_notes(notes: List[Dict[str, Any]], space
         logger.info(f"Calling LLM to generate graph structure from {len(notes)} notes...")
         response_text = await llm_service._call_llm(
             prompt=prompt,
-            model_name="google/gemini-2.0-flash-exp:free",  # Very large context window
+            model_name="google/gemini-2.0-flash-001",  # Very large context window
             stream=False,  # We don't need streaming here
             temperature=0.2,  # Slightly creative but mostly deterministic
             max_tokens=100000  # Large output size to handle the graph
@@ -478,7 +478,7 @@ async def generate_research_content_for_graph(
             logger.info(f"Generating research content for node {node_id}...")
             response_text = await llm_service._call_llm(
                 prompt=prompt,
-                model_name="google/gemini-2.0-flash-exp:free",
+                model_name="google/gemini-2.0-flash-001",
                 stream=False,
                 temperature=0.4,  # Slightly more creative for content
                 max_tokens=30000  # Large enough for detailed content
@@ -568,7 +568,7 @@ async def generate_research_content_for_graph(
                     logger.info(f"Generating research content for sub-node {detail_id}...")
                     sub_response_text = await llm_service._call_llm(
                         prompt=sub_prompt,
-                        model_name="google/gemini-2.0-flash-exp:free",
+                        model_name="google/gemini-2.0-flash-001",
                         stream=False,
                         temperature=0.4,
                         max_tokens=15000

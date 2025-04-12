@@ -78,7 +78,7 @@ async def generate_search_queries(notes_content: str, space_id: str, note_ids: L
         # Call the LLM to generate search queries
         response_text = await llm_service._call_llm(
             prompt=prompt,
-            model_name="google/gemini-2.0-flash-exp:free",
+            model_name="google/gemini-2.0-flash-001",
             stream=False,
             temperature=0.3,
             max_tokens=4000
@@ -216,7 +216,7 @@ async def generate_digest(notes_content: str, search_results: List[Tuple[str, st
         # Call the LLM to generate the digest
         response_text = await llm_service._call_llm(
             prompt=prompt,
-            model_name="google/gemini-2.0-flash-exp:free",
+            model_name="google/gemini-2.0-flash-001",
             stream=False,
             temperature=0.4,
             max_tokens=8000
